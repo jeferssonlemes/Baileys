@@ -14,6 +14,7 @@ export { makeWALegacySocket }
 
 export type WASocket = ReturnType<typeof makeWASocket>
 
+// teste
 export type AnyWASocket = WASocket | WALegacySocket
 
 export default makeWASocket
