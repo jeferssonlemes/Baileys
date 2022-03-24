@@ -259,6 +259,9 @@ export const makeSocket = ({
 
 	const onMessageRecieved = (data: Buffer) => {
 		noise.decodeFrame(data, frame => {
+			// reset ping timeout
+			lastDateRecv = new Date()
+
 			ws.emit('frame', frame)
 			// if it's a binary node
 			if(!(frame instanceof Uint8Array)) {
@@ -296,7 +299,7 @@ export const makeSocket = ({
 		logger.info({ error }, 'connection closed')
 
 		clearInterval(keepAliveReq)
-		clearInterval(qrTimer)
+		clearTimeout(qrTimer)
 
 		ws.removeAllListeners('close')
 		ws.removeAllListeners('error')
@@ -359,7 +362,7 @@ export const makeSocket = ({
 				end(new Boom('Connection was lost', { statusCode: DisconnectReason.connectionLost }))
 			} else if(ws.readyState === ws.OPEN) {
 				// if its all good, send a keep alive request
-				query(
+				sendNode(
 					{
 						tag: 'iq',
 						attrs: {
@@ -369,14 +372,11 @@ export const makeSocket = ({
 							xmlns: 'w:p',
 						},
 						content: [{ tag: 'ping', attrs: { } }]
-					},
-					keepAliveIntervalMs
+					}
 				)
-					.then(() => {
-						lastDateRecv = new Date()
-						logger.trace('recv keep alive')
+					.catch(err => {
+						logger.error({ trace: err.stack }, 'error in sending keep alive')
 					})
-					.catch(err => end(err))
 			} else {
 				logger.warn('keep alive called when WS not open')
 			}
@@ -450,6 +450,10 @@ export const makeSocket = ({
 
 		let qrMs = 60_000 // time to let a QR live
 		const genPairQR = () => {
+			if(ws.readyState !== ws.OPEN) {
+				return
+			}
+
 			const ref = refs.shift()
 			if(!ref) {
 				end(new Boom('QR refs attempts ended', { statusCode: DisconnectReason.timedOut }))
@@ -542,7 +546,19 @@ export const makeSocket = ({
 		ev.emit('connection.update', { connection: 'connecting', receivedPendingNotifications: false, qr: undefined })
 	})
 	// update credentials when required
-	ev.on('creds.update', update => Object.assign(creds, update))
+	ev.on('creds.update', update => {
+		const name = update.me?.name
+		// if name has just been received
+		if(!creds.me?.name && name) {
+			logger.info({ name }, 'received pushName')
+			sendNode({
+				tag: 'presence',
+				attrs: { name }
+			})
+		}
+
+		Object.assign(creds, update)
+	})
 
 	if(printQRInTerminal) {
 		printQRIfNecessaryListener(ev, logger)
