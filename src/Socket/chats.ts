@@ -421,8 +421,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				type = 'available'
 			}
 
-			// fix audio
-			if (firstChild.attrs?.media == 'audio'){
+			if (firstChild.attrs?.media === 'audio'){
 				type = 'recording';
 			}
 
