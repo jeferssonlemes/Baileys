@@ -420,7 +420,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			if(type === 'paused') {
 				type = 'available'
 			}
-
+			
 			if (firstChild.attrs?.media === 'audio'){
 				type = 'recording';
 			}
