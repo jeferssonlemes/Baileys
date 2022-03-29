@@ -5,7 +5,7 @@ import { promisify } from 'util'
 import WebSocket from 'ws'
 import { proto } from '../../WAProto'
 import { DEF_CALLBACK_PREFIX, DEF_TAG_PREFIX, DEFAULT_ORIGIN, KEY_BUNDLE_TYPE } from '../Defaults'
-import { AuthenticationCreds, BaileysEventEmitter, DisconnectReason, SocketConfig } from '../Types'
+import { AuthenticationCreds, BaileysEventEmitter, BaileysEventMap, DisconnectReason, SocketConfig } from '../Types'
 import { addTransactionCapability, bindWaitForConnectionUpdate, configureSuccessfulPairing, Curve, encodeBigEndian, generateLoginNode, generateOrGetPreKeys, generateRegistrationNode, getPreKeys, makeNoiseHandler, printQRIfNecessaryListener, promiseTimeout, useSingleFileAuthState, xmppPreKey, xmppSignedPreKey } from '../Utils'
 import { assertNodeErrorFree, BinaryNode, encodeBinaryNode, getBinaryNodeChild, S_WHATSAPP_NET } from '../WABinary'
 
@@ -60,6 +60,8 @@ export const makeSocket = ({
 	}
 
 	const { creds } = authState
+	// add transaction capability
+	const keys = addTransactionCapability(authState.keys, logger)
 
 	let lastDateRecv: Date
 	let epoch = 0
@@ -230,10 +232,14 @@ export const makeSocket = ({
 			update.serverHasPreKeys = true
 		}
 
-		await authState.keys.set({ 'pre-key': newPreKeys })
+		await keys.transaction(
+			async() => {
+				await keys.set({ 'pre-key': newPreKeys })
 
-		const preKeys = await getPreKeys(authState.keys, preKeysRange[0], preKeysRange[0] + preKeysRange[1])
-		await execute(preKeys)
+				const preKeys = await getPreKeys(keys, preKeysRange[0], preKeysRange[0] + preKeysRange[1])
+				await execute(preKeys)
+			}
+		)
 
 		ev.emit('creds.update', update)
 	}
@@ -402,6 +408,13 @@ export const makeSocket = ({
 			]
 		})
 	)
+
+	const emitEventsFromMap = (map: Partial<BaileysEventMap<AuthenticationCreds>>) => {
+		for(const key in map) {
+			ev.emit(key as any, map[key])
+		}
+	}
+
 	/** logout & invalidate connection */
 	const logout = async() => {
 		const jid = authState.creds.me?.id
@@ -574,14 +587,11 @@ export const makeSocket = ({
 		type: 'md' as 'md',
 		ws,
 		ev,
-		authState: {
-			creds,
-			// add capability
-			keys: addTransactionCapability(authState.keys, logger)
-		},
+		authState: { creds, keys },
 		get user() {
 			return authState.creds.me
 		},
+		emitEventsFromMap,
 		assertingPreKeys,
 		generateMessageTag,
 		query,
