@@ -389,7 +389,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					to: toJid,
 				},
 				content: [
-					{ tag: type, attrs: { } }
+					{ 
+						tag: type === 'recording' ? 'composing' : type, 
+						attrs: type === 'recording' ? { media : 'audio'} : {}
+					}
 				]
 			})
 		}
@@ -424,10 +427,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			
 			if (firstChild.attrs?.media === 'audio'){
 				type = 'recording';
-			}
-
-			if(firstChild.attrs?.media === 'audio') {
-				type = 'recording'
 			}
 
 			presence = { lastKnownPresence: type }
