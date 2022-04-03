@@ -176,9 +176,10 @@ export const makeSocket = ({
 
 	/** connection handshake */
 	const validateConnection = async() => {
-		const helloMsg: proto.IHandshakeMessage = {
+		let helloMsg: proto.IHandshakeMessage = {
 			clientHello: { ephemeral: ephemeralKeyPair.public }
 		}
+		helloMsg = proto.HandshakeMessage.fromObject(helloMsg)
 
 		logger.info({ browser, helloMsg }, 'connected to WA Web')
 
@@ -244,9 +245,9 @@ export const makeSocket = ({
 		ev.emit('creds.update', update)
 	}
 
-	/** generates and uploads a set of pre-keys */
-	const uploadPreKeys = async() => {
-		await assertingPreKeys(INITIAL_PREKEY_COUNT, async preKeys => {
+	/** generates and uploads a set of pre-keys to the server */
+	const uploadPreKeys = async(count = INITIAL_PREKEY_COUNT) => {
+		await assertingPreKeys(count, async preKeys => {
 			const node: BinaryNode = {
 				tag: 'iq',
 				attrs: {
@@ -602,6 +603,7 @@ export const makeSocket = ({
 		logout,
 		end,
 		onUnexpectedError,
+		uploadPreKeys,
 		/** Waits for the connection to WA to reach a state */
 		waitForConnectionUpdate: bindWaitForConnectionUpdate(ev)
 	}

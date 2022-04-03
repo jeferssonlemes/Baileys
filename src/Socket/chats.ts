@@ -389,9 +389,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					to: toJid,
 				},
 				content: [
-					{ 
-						tag: type === 'recording' ? 'composing' : type, 
-						attrs: type === 'recording' ? { media : 'audio'} : {}
+					{
+						tag: type === 'recording' ? 'composing' : type,
+						attrs: type === 'recording' ? { media : 'audio' } : {}
 					}
 				]
 			})
