@@ -189,7 +189,7 @@ The events are typed up in a type map, as mentioned here:
 
 export type BaileysEventMap = {
     /** connection state has been updated -- WS closed, opened, connecting etc. */
-	'connection.update': Partial<ConnectionState>
+    'connection.update': Partial<ConnectionState>
     /** auth credentials updated -- some pre key state, device ID etc. */
     'creds.update': Partial<AuthenticationCreds>
     /** set chats (history sync), chats are reverse chronologically sorted */
@@ -474,7 +474,7 @@ const templateButtons = [
 const buttonMessage = {
     text: "Hi it's a template message",
     footer: 'Hello World',
-    templateButtons: templateButttons,
+    templateButtons: templateButtons,
     image: {url: 'https://example.com/image.jpeg'}
 }
 
@@ -521,16 +521,19 @@ await sock.sendMessage('1234@s.whatsapp.net', { forward: msg }) // WA forward th
 
 ## Reading Messages
 
-A set of message IDs must be explicitly marked read now. 
-Cannot mark an entire "chat" read as it were with Baileys Web.
+A set of message keys must be explicitly marked read now. 
+In multi-device, you cannot mark an entire "chat" read as it were with Baileys Web.
 This does mean you have to keep track of unread messages.
 
-``` ts 
-const id = '1234-123@g.us'
-const messageID = 'AHASHH123123AHGA' // id of the message you want to read
-const participant = '912121232@s.whatsapp.net' // the ID of the user that sent the message (undefined for individual chats)
-
-await sock.sendReadReceipt(id, participant, [messageID])
+``` ts
+const key = {
+    remoteJid: '1234-123@g.us',
+    id: 'AHASHH123123AHGA', // id of the message you want to read
+    participant: '912121232@s.whatsapp.net' // the ID of the user that sent the  message (undefined for individual chats)
+}
+// pass to readMessages function
+// can pass multiple keys to read multiple messages as well
+await sock.readMessages([key])
 ```
 
 The message ID is the unique identifier of the message that you are marking as read. On a `WAMessage`, the `messageID` can be accessed using ```messageID = message.key.id```.
