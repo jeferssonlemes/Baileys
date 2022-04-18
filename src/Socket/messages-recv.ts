@@ -306,7 +306,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		const { attrs, content } = node
 		const isNodeFromMe = areJidsSameUser(attrs.participant || attrs.from, authState.creds.me?.id)
-		const remoteJid = !isNodeFromMe || isJidGroup(attrs.from) ? attrs.from : attrs.recipient
+		const remoteJid = !isNodeFromMe || isJidGroup(attrs.from) || attrs.type === 'read' ? attrs.from : attrs.recipient
 		const fromMe = !attrs.recipient || (attrs.type === 'retry' && isNodeFromMe)
 
 		const ids = [attrs.id]
