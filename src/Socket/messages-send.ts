@@ -487,7 +487,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						logger,
 						userJid,
 						// multi-device does not have this yet
-						getUrlInfo: text => getUrlInfo(text, { thumbnailWidth: linkPreviewImageThumbnailWidth }),
+						getUrlInfo: text => getUrlInfo(
+							text,
+							{ thumbnailWidth: linkPreviewImageThumbnailWidth, timeoutMs: 3_000 }
+						),
 						upload: waUploadToServer,
 						mediaCache: config.mediaCache,
 						...options,
