@@ -6,6 +6,7 @@ import { Logger } from 'pino'
 import { proto } from '../../WAProto'
 import { version as baileysVersion } from '../Defaults/baileys-version.json'
 import { CommonBaileysEventEmitter, ConnectionState, DisconnectReason, WAVersion } from '../Types'
+import { BinaryNode, getAllBinaryNodeChildren } from '../WABinary'
 
 const PLATFORM_MAP = {
 	'aix': 'AIX',
@@ -252,7 +253,10 @@ const STATUS_MAP: { [_: string]: proto.WebMessageInfo.WebMessageInfoStatus } = {
 	'read': proto.WebMessageInfo.WebMessageInfoStatus.READ,
 	'read-self': proto.WebMessageInfo.WebMessageInfoStatus.READ
 }
-
+/**
+ * Given a type of receipt, returns what the new status of the message should be
+ * @param type type from receipt
+ */
 export const getStatusFromReceiptType = (type: string | undefined) => {
 	const status = STATUS_MAP[type]
 	if(typeof type === 'undefined') {
@@ -260,4 +264,27 @@ export const getStatusFromReceiptType = (type: string | undefined) => {
 	}
 
 	return status
+}
+
+const CODE_MAP: { [_: string]: DisconnectReason } = {
+	conflict: DisconnectReason.connectionReplaced
+}
+
+/**
+ * Stream errors generally provide a reason, map that to a baileys DisconnectReason
+ * @param reason the string reason given, eg. "conflict"
+ */
+export const getErrorCodeFromStreamError = (node: BinaryNode) => {
+	const [reasonNode] = getAllBinaryNodeChildren(node)
+	let reason = reasonNode?.tag || 'unknown'
+	const statusCode = +(node.attrs.code || CODE_MAP[reason] || DisconnectReason.badSession)
+
+	if(statusCode === DisconnectReason.restartRequired) {
+		reason = 'restart required'
+	}
+
+	return {
+		reason,
+		statusCode
+	}
 }
