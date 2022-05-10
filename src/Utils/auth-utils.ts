@@ -128,7 +128,7 @@ export const useSingleFileAuthState = (filename: string, logger?: Logger): { sta
 		writeFileSync(
 			filename,
 			// BufferJSON replacer utility saves buffers nicely
-			JSON.stringify({ creds, keys }, BufferJSON.replacer, 2)
+			JSON.stringify({ creds,  /* keys */ }, BufferJSON.replacer, 2)
 		)
 	}
 
@@ -138,7 +138,7 @@ export const useSingleFileAuthState = (filename: string, logger?: Logger): { sta
 			BufferJSON.reviver
 		)
 		creds = result.creds
-		keys = result.keys
+		keys = { } /* result.keys */
 	} else {
 		creds = initAuthCreds()
 		keys = { }
@@ -172,7 +172,7 @@ export const useSingleFileAuthState = (filename: string, logger?: Logger): { sta
 						Object.assign(keys[key], data[_key])
 					}
 
-					saveState()
+					// saveState()
 				}
 			}
 		},
