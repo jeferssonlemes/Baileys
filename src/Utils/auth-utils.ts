@@ -115,6 +115,63 @@ export const initAuthCreds = (): AuthenticationCreds => {
 	}
 }
 
+/** stores the full authentication state in memory */
+export const  useMemoryAuthState = (stateString) => {
+    let stateRestored = false;
+    let creds;
+    let keys = {};
+
+    const getStringAuthState = () => {
+        return JSON.stringify({ creds, keys }, BufferJSON.replacer, 2);
+    };
+
+    if (!!stateString) {
+        try {
+            const result = JSON.parse(stateString, BufferJSON.reviver);
+            creds = result.creds;
+            keys = result.keys;
+            stateRestored = true;
+        } catch (error) {
+            console.log('Erro na tentativa de desserializar as credenciais')
+        }
+    }
+
+    if (!stateRestored) {
+        creds = exports.initAuthCreds();
+        keys = {};
+    }
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: (type, ids) => {
+                    const key = KEY_MAP[type];
+                    return ids.reduce((dict, id) => {
+                        var _a;
+                        let value = (_a = keys[key]) === null || _a === void 0 ? void 0 : _a[id];
+                        if (value) {
+                            if (type === 'app-state-sync-key') {
+                                value = proto.AppStateSyncKeyData.fromObject(value);
+                            }
+                            dict[id] = value;
+                        }
+                        return dict;
+                    }, {});
+                },
+                set: (data) => {
+                    for (const _key in data) {
+                        const key = KEY_MAP[_key];
+                        keys[key] = keys[key] || {};
+                        Object.assign(keys[key], data[_key]);
+                    }
+                }
+            }
+        },
+        getStringAuthState
+    };
+}
+
 /** stores the full authentication state in a single JSON file */
 export const useSingleFileAuthState = (filename: string, logger?: Logger): { state: AuthenticationState, saveState: () => void } => {
 	// require fs here so that in case "fs" is not available -- the app does not crash
