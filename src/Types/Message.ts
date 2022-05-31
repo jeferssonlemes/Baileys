@@ -129,25 +129,30 @@ export type AnyMessageContent = AnyRegularMessageContent | {
 	disappearingMessagesInChat: boolean | number
 }
 
-export type MessageRelayOptions = {
+export type GroupMetadataParticipants = Pick<GroupMetadata, 'participants'>
+
+type MinimalRelayOptions = {
+    /** override the message ID with a custom provided string */
     messageId?: string
-    /** only send to a specific participant */
-    participant?: string
-    additionalAttributes?: { [_: string]: string }
-    cachedGroupMetadata?: (jid: string) => Promise<GroupMetadata | undefined>
-    //cachedDevices?: (jid: string) => Promise<string[] | undefined>
+    /** cached group metadata, use to prevent redundant requests to WA & speed up msg sending */
+    cachedGroupMetadata?: (jid: string) => Promise<GroupMetadataParticipants | undefined>
 }
 
-export type MiscMessageGenerationOptions = {
-    /** Force message id */
-    messageId?: string
+export type MessageRelayOptions = MinimalRelayOptions & {
+    /** only send to a specific participant; used when a message decryption fails for a single user */
+    participant?: string
+    /** additional attributes to add to the WA binary node */
+    additionalAttributes?: { [_: string]: string }
+}
+
+export type MiscMessageGenerationOptions = MinimalRelayOptions & {
     /** optional, if you want to manually set the timestamp of the message */
 	timestamp?: Date
     /** the message you want to quote */
 	quoted?: WAMessage
     /** disappearing messages settings */
     ephemeralExpiration?: number | string
-
+    /** timeout for media upload to WA server */
     mediaUploadTimeoutMs?: number
 }
 export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {

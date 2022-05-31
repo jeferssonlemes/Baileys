@@ -6,6 +6,7 @@ import { areJidsSameUser, jidNormalizedUser } from '../WABinary'
 
 type ProcessMessageContext = {
 	historyCache: Set<string>
+	downloadHistory: boolean
 	meId: string
 	keyStore: SignalKeyStoreWithTransaction
 	accountSettings: AccountSettings
@@ -13,9 +14,32 @@ type ProcessMessageContext = {
 	treatCiphertextMessagesAsReal?: boolean
 }
 
+const MSG_MISSED_CALL_TYPES = new Set([
+	WAMessageStubType.CALL_MISSED_GROUP_VIDEO,
+	WAMessageStubType.CALL_MISSED_GROUP_VOICE,
+	WAMessageStubType.CALL_MISSED_VIDEO,
+	WAMessageStubType.CALL_MISSED_VOICE
+])
+
+/** Cleans a received message to further processing */
+export const cleanMessage = (message: proto.IWebMessageInfo, meId: string) => {
+	// ensure remoteJid doesn't have device or agent in it
+	message.key.remoteJid = jidNormalizedUser(message.key.remoteJid!)
+	const content = normalizeMessageContent(message.message)
+	// if the message has a reaction, ensure fromMe & remoteJid are from our perspective
+	if(content?.reactionMessage) {
+		const msgKey = content.reactionMessage.key!
+		if(!message.key.fromMe) {
+			msgKey.fromMe = areJidsSameUser(msgKey.participant || msgKey.remoteJid, meId)
+			msgKey.remoteJid = message.key.remoteJid
+			msgKey.participant = msgKey.participant || message.key.participant
+		}
+	}
+}
+
 const processMessage = async(
 	message: proto.IWebMessageInfo,
-	{ historyCache, meId, keyStore, accountSettings, logger, treatCiphertextMessagesAsReal }: ProcessMessageContext
+	{ downloadHistory, historyCache, meId, keyStore, accountSettings, logger, treatCiphertextMessagesAsReal }: ProcessMessageContext
 ) => {
 	const map: Partial<BaileysEventMap<any>> = { }
 
@@ -24,8 +48,9 @@ const processMessage = async(
 	const normalizedContent = !!message.message && normalizeMessageContent(message.message)
 	if(
 		(
-			!!normalizedContent ||
-			(message.messageStubType === WAMessageStubType.CIPHERTEXT && treatCiphertextMessagesAsReal)
+			!!normalizedContent
+			|| MSG_MISSED_CALL_TYPES.has(message.messageStubType)
+			|| (message.messageStubType === WAMessageStubType.CIPHERTEXT && treatCiphertextMessagesAsReal)
 		)
 		&& !normalizedContent?.protocolMessage
 		&& !normalizedContent?.reactionMessage
@@ -38,6 +63,7 @@ const processMessage = async(
 
 		if(accountSettings?.unarchiveChats) {
 			chat.archive = false
+			chat.readOnly = false
 		}
 	}
 
@@ -50,18 +76,20 @@ const processMessage = async(
 
 			logger?.info({ histNotification, id: message.key.id }, 'got history notification')
 
-			const { chats, contacts, messages, isLatest } = await downloadAndProcessHistorySyncNotification(histNotification, historyCache)
+			if(downloadHistory) {
+				const { chats, contacts, messages, isLatest } = await downloadAndProcessHistorySyncNotification(histNotification, historyCache)
 
-			if(chats.length) {
-				map['chats.set'] = { chats, isLatest }
-			}
+				if(chats.length) {
+					map['chats.set'] = { chats, isLatest }
+				}
 
-			if(messages.length) {
-				map['messages.set'] = { messages, isLatest }
-			}
+				if(messages.length) {
+					map['messages.set'] = { messages, isLatest }
+				}
 
-			if(contacts.length) {
-				map['contacts.set'] = { contacts }
+				if(contacts.length) {
+					map['contacts.set'] = { contacts }
+				}
 			}
 
 			break
@@ -112,7 +140,11 @@ const processMessage = async(
 			key: message.key,
 		}
 		const operation = content.reactionMessage?.text ? 'add' : 'remove'
-		map['messages.reaction'] = { reaction, key: content.reactionMessage!.key!, operation }
+		map['messages.reaction'] = {
+			reaction,
+			key: content.reactionMessage!.key!,
+			operation
+		}
 	} else if(message.messageStubType) {
 		const jid = message.key!.remoteJid!
 		//let actor = whatsappID (message.participant)
@@ -146,6 +178,14 @@ const processMessage = async(
 			}
 
 			emitParticipantsUpdate('add')
+			break
+		case WAMessageStubType.GROUP_PARTICIPANT_DEMOTE:
+			participants = message.messageStubParameters
+			emitParticipantsUpdate('demote')
+			break
+		case WAMessageStubType.GROUP_PARTICIPANT_PROMOTE:
+			participants = message.messageStubParameters
+			emitParticipantsUpdate('promote')
 			break
 		case WAMessageStubType.GROUP_CHANGE_ANNOUNCE:
 			const announceValue = message.messageStubParameters[0]

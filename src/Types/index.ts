@@ -8,17 +8,26 @@ export * from './Legacy'
 export * from './Socket'
 export * from './Events'
 export * from './Product'
+export * from './Call'
 
 import type NodeCache from 'node-cache'
 import { proto } from '../../WAProto'
-import { AuthenticationState } from './Auth'
+import { AuthenticationState, TransactionCapabilityOptions } from './Auth'
 import { CommonSocketConfig } from './Socket'
 
+export type MessageRetryMap = { [msgId: string]: number }
+
 export type SocketConfig = CommonSocketConfig<AuthenticationState> & {
+    /** By default true, should history messages be downloaded and processed */
+    downloadHistory: boolean
+    /** transaction capability options for SignalKeyStore */
+    transactionOpts: TransactionCapabilityOptions
     /** provide a cache to store a user's device list */
     userDevicesCache?: NodeCache
-    /** map to store the retry counts for failed messages */
-    msgRetryCounterMap?: { [msgId: string]: number }
+    /**
+     * map to store the retry counts for failed messages;
+     * used to determine whether to retry a message or not */
+    msgRetryCounterMap?: MessageRetryMap
     /** width for link preview images */
     linkPreviewImageThumbnailWidth: number
     /**
@@ -28,6 +37,8 @@ export type SocketConfig = CommonSocketConfig<AuthenticationState> & {
     getMessage: (key: proto.IMessageKey) => Promise<proto.IMessage | undefined>
 }
 
+export type UserFacingSocketConfig = Partial<SocketConfig> & { auth: AuthenticationState }
+
 export enum DisconnectReason {
 	connectionClosed = 428,
 	connectionLost = 408,
@@ -35,7 +46,7 @@ export enum DisconnectReason {
     timedOut = 408,
 	loggedOut = 401,
     badSession = 500,
-    restartRequired = 410,
+    restartRequired = 515,
     multideviceMismatch = 411
 }
 

@@ -1,21 +1,20 @@
 
 import { proto } from '../../WAProto'
-import { KEY_BUNDLE_TYPE } from '../Defaults'
-import { BaileysEventMap, MessageReceiptType, MessageUserReceipt, SocketConfig, WAMessageStubType } from '../Types'
-import { debouncedTimeout, decodeMessageStanza, delay, encodeBigEndian, generateSignalPubKey, getStatusFromReceiptType, normalizeMessageContent, xmppPreKey, xmppSignedPreKey } from '../Utils'
+import { KEY_BUNDLE_TYPE, MIN_PREKEY_COUNT } from '../Defaults'
+import { BaileysEventMap, MessageReceiptType, MessageUserReceipt, SocketConfig, WACallEvent, WAMessageStubType } from '../Types'
+import { debouncedTimeout, decodeMessageStanza, delay, encodeBigEndian, generateSignalPubKey, getCallStatusFromNode, getNextPreKeys, getStatusFromReceiptType, normalizeMessageContent, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
-import processMessage from '../Utils/process-message'
+import processMessage, { cleanMessage } from '../Utils/process-message'
 import { areJidsSameUser, BinaryNode, BinaryNodeAttributes, getAllBinaryNodeChildren, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidEncode, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary'
 import { makeChatsSocket } from './chats'
 import { extractGroupMetadata } from './groups'
-
-const MIN_PREKEY_COUNT = 5
 
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const {
 		logger,
 		treatCiphertextMessagesAsReal,
-		retryRequestDelayMs
+		retryRequestDelayMs,
+		downloadHistory
 	} = config
 	const sock = makeChatsSocket(config)
 	const {
@@ -24,7 +23,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		ws,
 		onUnexpectedError,
 		assertSessions,
-		assertingPreKeys,
 		sendNode,
 		relayMessage,
 		sendReceipt,
@@ -45,23 +43,30 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	)
 
 	const msgRetryMap = config.msgRetryCounterMap || { }
+	const callOfferData: { [id: string]: WACallEvent } = { }
 
 	const historyCache = new Set<string>()
 
-	const sendMessageAck = async({ tag, attrs }: BinaryNode, extraAttrs: BinaryNodeAttributes) => {
+	const sendMessageAck = async({ tag, attrs }: BinaryNode, extraAttrs: BinaryNodeAttributes = { }) => {
 		const stanza: BinaryNode = {
 			tag: 'ack',
 			attrs: {
 				id: attrs.id,
 				to: attrs.from,
+				class: tag,
 				...extraAttrs,
 			}
 		}
+
 		if(!!attrs.participant) {
 			stanza.attrs.participant = attrs.participant
 		}
 
-		logger.debug({ recv: attrs, sent: stanza.attrs }, `sent "${tag}" ack`)
+		if(tag !== 'message' && attrs.type && !extraAttrs.type) {
+			stanza.attrs.type = attrs.type
+		}
+
+		logger.debug({ recv: { tag, attrs }, sent: stanza.attrs }, 'sent ack')
 		await sendNode(stanza)
 	}
 
@@ -80,64 +85,70 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const { account, signedPreKey, signedIdentityKey: identityKey } = authState.creds
 
 		const deviceIdentity = proto.ADVSignedDeviceIdentity.encode(account).finish()
-		await assertingPreKeys(1, async preKeys => {
-			const [keyId] = Object.keys(preKeys)
-			const key = preKeys[+keyId]
+		await authState.keys.transaction(
+			async() => {
+				const { update, preKeys } = await getNextPreKeys(authState, 1)
 
-			const decFrom = node.attrs.from ? jidDecode(node.attrs.from) : undefined
-			const receipt: BinaryNode = {
-				tag: 'receipt',
-				attrs: {
-					id: msgId,
-					type: 'retry',
-					to: isGroup ? node.attrs.from : jidEncode(decFrom!.user, 's.whatsapp.net', decFrom!.device, 0)
-				},
-				content: [
-					{
-						tag: 'retry',
-						attrs: {
-							count: retryCount.toString(),
-							id: node.attrs.id,
-							t: node.attrs.t,
-							v: '1'
-						}
+				const [keyId] = Object.keys(preKeys)
+				const key = preKeys[+keyId]
+
+				const decFrom = node.attrs.from ? jidDecode(node.attrs.from) : undefined
+				const receipt: BinaryNode = {
+					tag: 'receipt',
+					attrs: {
+						id: msgId,
+						type: 'retry',
+						to: isGroup ? node.attrs.from : jidEncode(decFrom!.user, 's.whatsapp.net', decFrom!.device, 0)
 					},
-					{
-						tag: 'registration',
-						attrs: { },
-						content: encodeBigEndian(authState.creds.registrationId)
-					}
-				]
-			}
-
-			if(node.attrs.recipient) {
-				receipt.attrs.recipient = node.attrs.recipient
-			}
-
-			if(node.attrs.participant) {
-				receipt.attrs.participant = node.attrs.participant
-			}
-
-			if(retryCount > 1) {
-				const exec = generateSignalPubKey(Buffer.from(KEY_BUNDLE_TYPE)).slice(0, 1)
-				const content = receipt.content! as BinaryNode[]
-				content.push({
-					tag: 'keys',
-					attrs: { },
 					content: [
-						{ tag: 'type', attrs: { }, content: exec },
-						{ tag: 'identity', attrs: { }, content: identityKey.public },
-						xmppPreKey(key, +keyId),
-						xmppSignedPreKey(signedPreKey),
-						{ tag: 'device-identity', attrs: { }, content: deviceIdentity }
+						{
+							tag: 'retry',
+							attrs: {
+								count: retryCount.toString(),
+								id: node.attrs.id,
+								t: node.attrs.t,
+								v: '1'
+							}
+						},
+						{
+							tag: 'registration',
+							attrs: { },
+							content: encodeBigEndian(authState.creds.registrationId)
+						}
 					]
-				})
+				}
+
+				if(node.attrs.recipient) {
+					receipt.attrs.recipient = node.attrs.recipient
+				}
+
+				if(node.attrs.participant) {
+					receipt.attrs.participant = node.attrs.participant
+				}
+
+				if(retryCount > 1) {
+					const exec = generateSignalPubKey(Buffer.from(KEY_BUNDLE_TYPE)).slice(0, 1)
+					const content = receipt.content! as BinaryNode[]
+					content.push({
+						tag: 'keys',
+						attrs: { },
+						content: [
+							{ tag: 'type', attrs: { }, content: exec },
+							{ tag: 'identity', attrs: { }, content: identityKey.public },
+							xmppPreKey(key, +keyId),
+							xmppSignedPreKey(signedPreKey),
+							{ tag: 'device-identity', attrs: { }, content: deviceIdentity }
+						]
+					})
+				}
+
+				await sendNode(receipt)
+
+				logger.info({ msgAttrs: node.attrs, retryCount }, 'sent retry receipt')
+
+				ev.emit('creds.update', update)
 			}
-
-			await sendNode(receipt)
-
-			logger.info({ msgAttrs: node.attrs, retryCount }, 'sent retry receipt')
-		})
+		)
 	}
 
 	const processMessageLocal = async(msg: proto.IWebMessageInfo) => {
@@ -145,7 +156,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// process message and emit events
 		const newEvents = await processMessage(
 			msg,
-			{ historyCache, meId, accountSettings: authState.creds.accountSettings, keyStore: authState.keys, logger, treatCiphertextMessagesAsReal }
+			{
+				downloadHistory,
+				historyCache,
+				meId,
+				accountSettings: authState.creds.accountSettings,
+				keyStore: authState.keys,
+				logger,
+				treatCiphertextMessagesAsReal
+			}
 		)
 
 		// send ack for history message
@@ -386,7 +405,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				if(shouldAck) {
-					await sendMessageAck(node, { class: 'receipt', type: attrs.type })
+					await sendMessageAck(node)
 				}
 			}
 		)
@@ -394,7 +413,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const handleNotification = async(node: BinaryNode) => {
 		const remoteJid = node.attrs.from
-		await sendMessageAck(node, { class: 'notification', type: node.attrs.type })
+		await sendMessageAck(node)
 		await processingMutex.mutex(
 			remoteJid,
 			async() => {
@@ -455,6 +474,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		processingMutex.mutex(
 			msg.key.remoteJid!,
 			async() => {
+				await sendMessageAck(stanza)
 				await decryptionTask
 				// message failed to decrypt
 				if(msg.messageStubType === proto.WebMessageInfo.WebMessageInfoStubType.CIPHERTEXT) {
@@ -475,7 +495,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						}
 					)
 				} else {
-					await sendMessageAck(stanza, { class: 'receipt' })
 					// no type in the receipt => message delivered
 					let type: MessageReceiptType = undefined
 					let participant = msg.key.participant
@@ -492,7 +511,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					await sendReceipt(msg.key.remoteJid!, participant, [msg.key.id!], type)
 				}
 
-				msg.key.remoteJid = jidNormalizedUser(msg.key.remoteJid!)
+				cleanMessage(msg, authState.creds.me!.id)
 				ev.emit('messages.upsert', { messages: [msg], type: stanza.attrs.offline ? 'append' : 'notify' })
 			}
 		)
@@ -501,29 +520,44 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			)
 	})
 
-	ws.on('CB:ack,class:message', async(node: BinaryNode) => {
-		sendNode({
-			tag: 'ack',
-			attrs: {
-				class: 'receipt',
-				id: node.attrs.id,
-				from: node.attrs.from
-			}
-		})
-			.catch(err => onUnexpectedError(err, 'ack message receipt'))
-		logger.debug({ attrs: node.attrs }, 'sending receipt for ack')
-	})
-
 	ws.on('CB:call', async(node: BinaryNode) => {
-		logger.info({ node }, 'recv call')
-
-		const [child] = getAllBinaryNodeChildren(node)
-		if(!!child?.tag) {
-			sendMessageAck(node, { class: 'call', type: child.tag })
-				.catch(
-					error => onUnexpectedError(error, 'ack call')
-				)
+		const { attrs } = node
+		const [infoChild] = getAllBinaryNodeChildren(node)
+		const callId = infoChild.attrs['call-id']
+		const from = infoChild.attrs.from || infoChild.attrs['call-creator']
+		const status = getCallStatusFromNode(infoChild)
+		const call: WACallEvent = {
+			chatId: attrs.from,
+			from,
+			id: callId,
+			date: new Date(+attrs.t * 1000),
+			offline: !!attrs.offline,
+			status,
 		}
+
+		if(status === 'offer') {
+			call.isVideo = !!getBinaryNodeChild(infoChild, 'video')
+			call.isGroup = infoChild.attrs.type === 'group'
+			callOfferData[call.id] = call
+		}
+
+		// use existing call info to populate this event
+		if(callOfferData[call.id]) {
+			call.isVideo = callOfferData[call.id].isVideo
+			call.isGroup = callOfferData[call.id].isGroup
+		}
+
+		// delete data once call has ended
+		if(status === 'reject' || status === 'accept' || status === 'timeout') {
+			delete callOfferData[call.id]
+		}
+
+		ev.emit('call', [call])
+
+		await sendMessageAck(node, { type: infoChild.tag })
+			.catch(
+				error => onUnexpectedError(error, 'ack call')
+			)
 	})
 
 	ws.on('CB:receipt', node => {
@@ -547,6 +581,35 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			.catch(
 				error => onUnexpectedError(error, 'handling upserted messages')
 			)
+	})
+
+	ev.on('call', ([ call ]) => {
+		// missed call + group call notification message generation
+		if(call.status === 'timeout' || (call.status === 'offer' && call.isGroup)) {
+			const msg: proto.IWebMessageInfo = {
+				key: {
+					remoteJid: call.chatId,
+					id: call.id,
+					fromMe: false
+				},
+				messageTimestamp: unixTimestampSeconds(call.date),
+			}
+			if(call.status === 'timeout') {
+				if(call.isGroup) {
+					msg.messageStubType = call.isVideo ? WAMessageStubType.CALL_MISSED_GROUP_VIDEO : WAMessageStubType.CALL_MISSED_GROUP_VOICE
+				} else {
+					msg.messageStubType = call.isVideo ? WAMessageStubType.CALL_MISSED_VIDEO : WAMessageStubType.CALL_MISSED_VOICE
+				}
+			} else {
+				msg.message = { call: { callKey: Buffer.from(call.id) } }
+			}
+
+			const protoMsg = proto.WebMessageInfo.fromObject(msg)
+			ev.emit(
+				'messages.upsert',
+				{ messages: [protoMsg], type: call.offline ? 'append' : 'notify' }
+			)
+		}
 	})
 
 	return {
