@@ -146,7 +146,7 @@ export const prepareWAMessageMedia = async(
 				encWriteStream,
 				{ fileEncSha256B64, mediaType, timeoutMs: options.mediaUploadTimeoutMs }
 			)
-			logger?.debug('uploaded media')
+			logger?.debug({ mediaType, cacheableKey }, 'uploaded media')
 			return result
 		})(),
 		(async() => {
@@ -263,7 +263,7 @@ export const generateWAMessageContent = async(
 		const extContent = { text: message.text } as WATextMessage
 
 		let urlInfo = message.linkPreview
-		if(!urlInfo) {
+		if(typeof urlInfo === 'undefined') {
 			urlInfo = await generateLinkPreviewIfRequired(message.text, options.getUrlInfo, options.logger)
 		}
 
@@ -307,6 +307,23 @@ export const generateWAMessageContent = async(
 			(message.disappearingMessagesInChat ? WA_DEFAULT_EPHEMERAL : 0) :
 			message.disappearingMessagesInChat
 		m = prepareDisappearingMessageSettingContent(exp)
+	} else if('buttonReply' in message) {
+		switch (message.type) {
+		case 'template':
+			m.templateButtonReplyMessage = {
+				selectedDisplayText: message.buttonReply.displayText,
+				selectedId: message.buttonReply.id,
+				selectedIndex: message.buttonReply.index,
+			}
+			break
+		case 'plain':
+			m.buttonsResponseMessage = {
+				selectedButtonId: message.buttonReply.id,
+				selectedDisplayText: message.buttonReply.displayText,
+				type: proto.ButtonsResponseMessage.ButtonsResponseMessageType.DISPLAY_TEXT,
+			}
+			break
+		}
 	} else {
 		m = await prepareWAMessageMedia(
 			message,

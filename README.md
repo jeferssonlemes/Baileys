@@ -641,10 +641,10 @@ WA uses an encrypted form of communication to send chat/app updates. This has be
 - Delete message for me
   ``` ts
   await sock.chatModify(
-      { clear: { message: { id: 'ATWYHDNNWU81732J', fromMe: true } } }, 
-      '123456@s.whatsapp.net', 
-      []
-  )
+    { clear: { messages: [{ id: 'ATWYHDNNWU81732J', fromMe: true, timestamp: "1654823909" }] } }, 
+    '123456@s.whatsapp.net', 
+    []
+)
   ```
 
 Note: if you mess up one of your updates, WA can log you out of all your devices and you'll have to login again.
@@ -777,11 +777,16 @@ Of course, replace ``` xyz ``` with an actual ID.
     console.log("joined to: " + response)
     ```
     Of course, replace ``` xxx ``` with invitation code.
+- To get info group by invite code
+    ```ts
+    const response = await sock.groupGetInviteInfo("xxx")
+    console.log("group information: " + response)
+    ```
 
 
 - To join the group using groupInviteMessage
     ``` ts
-    const response = await sock.groupAcceptInviteV4(groupInviteMessage)
+    const response = await sock.groupAcceptInviteV4("abcd@s.whatsapp.net", groupInviteMessage)
     console.log("joined to: " + response)
     ```
   Of course, replace ``` xxx ``` with invitation code.

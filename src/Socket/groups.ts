@@ -137,12 +137,25 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 			const result = getBinaryNodeChild(results, 'group')
 			return result.attrs.jid
 		},
-		groupAcceptInviteV4: async(jid: string, inviteMessage: proto.IGroupInviteMessage) => {
-			const results = await groupQuery(inviteMessage.groupJid, 'set', [{ tag: 'accept', attrs: {
-				code: inviteMessage.inviteCode,
-				expiration: inviteMessage.inviteExpiration.toString(),
-				admin: jid } }])
+		/**
+		 * accept a GroupInviteMessage
+		 * @param senderJid jid of the person that sent the message
+		 * @param inviteMessage the message to accept
+		 */
+		groupAcceptInviteV4: async(senderJid: string, inviteMessage: proto.IGroupInviteMessage) => {
+			const results = await groupQuery(inviteMessage.groupJid, 'set', [{
+				tag: 'accept',
+				attrs: {
+					code: inviteMessage.inviteCode,
+					expiration: inviteMessage.inviteExpiration.toString(),
+					admin: senderJid
+				}
+			}])
 			return results.attrs.from
+		},
+		groupGetInviteInfo: async(code: string) => {
+			const results = await groupQuery('@g.us', 'get', [{ tag: 'invite', attrs: { code } }])
+			return extractGroupMetadata(results)
 		},
 		groupToggleEphemeral: async(jid: string, ephemeralExpiration: number) => {
 			const content: BinaryNode = ephemeralExpiration ?
@@ -207,6 +220,9 @@ export const extractGroupMetadata = (result: BinaryNode) => {
 	const metadata: GroupMetadata = {
 		id: groupId,
 		subject: group.attrs.subject,
+		subjectOwner: group.attrs.s_o,
+		subjectTime: +group.attrs.s_t,
+		size: +group.attrs.size,
 		creation: +group.attrs.creation,
 		owner: group.attrs.creator ? jidNormalizedUser(group.attrs.creator) : undefined,
 		desc,
