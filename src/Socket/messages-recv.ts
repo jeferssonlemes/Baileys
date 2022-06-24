@@ -572,7 +572,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	ws.on('CB:receipt', node => {
 		handleReceipt(node)
 			.catch(
-				error => onUnexpectedError(error, 'handling receipt')
+				error => {
+					console.log('ERROR IN HANDLING RECEPT', node);
+					onUnexpectedError(error, 'handling receipt');
+				} 
 			)
 	})
 
