@@ -1,12 +1,12 @@
 import { proto } from '../../WAProto'
-import { GroupMetadata, ParticipantAction, SocketConfig } from '../Types'
-import { generateMessageID } from '../Utils'
+import { GroupMetadata, ParticipantAction, SocketConfig, WAMessageKey, WAMessageStubType } from '../Types'
+import { generateMessageID, unixTimestampSeconds } from '../Utils'
 import { BinaryNode, getBinaryNodeChild, getBinaryNodeChildren, jidEncode, jidNormalizedUser } from '../WABinary'
-import { makeSocket } from './socket'
+import { makeChatsSocket } from './chats'
 
 export const makeGroupsSocket = (config: SocketConfig) => {
-	const sock = makeSocket(config)
-	const { query } = sock
+	const sock = makeChatsSocket(config)
+	const { authState, ev, query, upsertMessage } = sock
 
 	const groupQuery = async(jid: string, type: 'get' | 'set', content: BinaryNode[]) => (
 		query({
@@ -89,18 +89,21 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 			const result = await groupQuery(
 				jid,
 				'set',
-				participants.map(
-					jid => ({
+				[
+					{
 						tag: action,
 						attrs: { },
-						content: [{ tag: 'participant', attrs: { jid } }]
-					})
-				)
+						content: participants.map(jid => ({
+							tag: 'participant',
+							attrs: { jid }
+						}))
+					}
+				]
 			)
 			const node = getBinaryNodeChild(result, action)
 			const participantsAffected = getBinaryNodeChildren(node!, 'participant')
 			return participantsAffected.map(p => {
-				return { status: p.attrs.error || 200, jid: p.attrs.jid }
+				return { status: p.attrs.error || '200', jid: p.attrs.jid }
 			})
 		},
 		groupUpdateDescription: async(jid: string, description?: string) => {
@@ -139,18 +142,57 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 		},
 		/**
 		 * accept a GroupInviteMessage
-		 * @param senderJid jid of the person that sent the message
+		 * @param key the key of the invite message, or optionally only provide the jid of the person who sent the invite
 		 * @param inviteMessage the message to accept
 		 */
-		groupAcceptInviteV4: async(senderJid: string, inviteMessage: proto.IGroupInviteMessage) => {
+		groupAcceptInviteV4: async(key: string | WAMessageKey, inviteMessage: proto.IGroupInviteMessage) => {
+			key = typeof key === 'string' ? { remoteJid: key } : key
 			const results = await groupQuery(inviteMessage.groupJid, 'set', [{
 				tag: 'accept',
 				attrs: {
 					code: inviteMessage.inviteCode,
 					expiration: inviteMessage.inviteExpiration.toString(),
-					admin: senderJid
+					admin: key.remoteJid!
 				}
 			}])
+			// if we have the full message key
+			// update the invite message to be expired
+			if(key.id) {
+				// create new invite message that is expired
+				inviteMessage = proto.GroupInviteMessage.fromObject(inviteMessage)
+				inviteMessage.inviteExpiration = 0
+				inviteMessage.inviteCode = ''
+				ev.emit('messages.update', [
+					{
+						key,
+						update: {
+							message: {
+								groupInviteMessage: inviteMessage
+							}
+						}
+					}
+				])
+			}
+
+			// generate the group add message
+			await upsertMessage(
+				{
+					key: {
+						remoteJid: inviteMessage.groupJid,
+						id: generateMessageID(),
+						fromMe: false,
+						participant: key.remoteJid,
+					},
+					messageStubType: WAMessageStubType.GROUP_PARTICIPANT_ADD,
+					messageStubParameters: [
+						authState.creds.me!.id
+					],
+					participant: key.remoteJid,
+					messageTimestamp: unixTimestampSeconds()
+				},
+				'notify'
+			)
+
 			return results.attrs.from
 		},
 		groupGetInviteInfo: async(code: string) => {

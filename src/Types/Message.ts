@@ -93,6 +93,7 @@ export type AnyMediaMessageContent = (
         seconds?: number
     } | ({
         sticker: WAMediaUpload
+        isAnimated?: boolean
     } & WithDimensions) | ({
         document: WAMediaUpload
         mimetype: string
@@ -152,6 +153,8 @@ export type MessageRelayOptions = MinimalRelayOptions & {
     participant?: string
     /** additional attributes to add to the WA binary node */
     additionalAttributes?: { [_: string]: string }
+    /** should we use the devices cache, or fetch afresh from the server; default assumed to be "true" */
+    useUserDevicesCache?: boolean
 }
 
 export type MiscMessageGenerationOptions = MinimalRelayOptions & {
@@ -183,7 +186,12 @@ export type MessageContentGenerationOptions = MediaGenerationOptions & {
 }
 export type MessageGenerationOptions = MessageContentGenerationOptions & MessageGenerationOptionsFromContent
 
-export type MessageUpdateType = 'append' | 'notify' | 'replace'
+/**
+ * Type of message upsert
+ * 1. notify => notify the user, this message was just received
+ * 2. append => append the message to the chat history, no notification required
+ */
+export type MessageUpsertType = 'append' | 'notify'
 
 export type MessageUserReceipt = proto.IUserReceipt
 

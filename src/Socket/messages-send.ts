@@ -6,7 +6,7 @@ import { WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import { AnyMessageContent, MediaConnInfo, MessageReceiptType, MessageRelayOptions, MiscMessageGenerationOptions, SocketConfig, WAMessageKey } from '../Types'
 import { aggregateMessageKeysNotFromMe, assertMediaContent, bindWaitForEvent, decryptMediaRetryData, encodeWAMessage, encryptMediaRetryRequest, encryptSenderKeyMsgSignalProto, encryptSignalProto, extractDeviceJids, generateMessageID, generateWAMessage, getUrlFromDirectPath, getWAUploadToServer, jidToSignalProtocolAddress, parseAndInjectE2ESessions, unixTimestampSeconds } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
-import { BinaryNode, BinaryNodeAttributes, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidEncode, jidNormalizedUser, JidWithDevice, reduceBinaryNodeToDictionary, S_WHATSAPP_NET } from '../WABinary'
+import { areJidsSameUser, BinaryNode, BinaryNodeAttributes, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidEncode, jidNormalizedUser, JidWithDevice, S_WHATSAPP_NET } from '../WABinary'
 import { makeGroupsSocket } from './groups'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
@@ -15,7 +15,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
 		ev,
 		authState,
+		upsertMessage,
 		query,
+		fetchPrivacySettings,
 		generateMessageTag,
 		sendNode,
 		groupMetadata,
@@ -26,26 +28,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		stdTTL: 300, // 5 minutes
 		useClones: false
 	})
-	let privacySettings: { [_: string]: string } | undefined
-
-	const fetchPrivacySettings = async(force: boolean = false) => {
-		if(!privacySettings || force) {
-			const { content } = await query({
-				tag: 'iq',
-				attrs: {
-					xmlns: 'privacy',
-					to: S_WHATSAPP_NET,
-					type: 'get'
-				},
-				content: [
-					{ tag: 'privacy', attrs: { } }
-				]
-			})
-			privacySettings = reduceBinaryNodeToDictionary(content[0] as BinaryNode, 'category')
-		}
-
-		return privacySettings
-	}
 
 	let mediaConn: Promise<MediaConnInfo>
 	const refreshMediaConn = async(forceGet = false) => {
@@ -141,15 +123,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
  	}
 
-	const getUSyncDevices = async(jids: string[], ignoreZeroDevices: boolean) => {
+	/** Fetch all the devices we've to send a message to */
+	const getUSyncDevices = async(jids: string[], useCache: boolean, ignoreZeroDevices: boolean) => {
 		const deviceResults: JidWithDevice[] = []
+
+		if(!useCache) {
+			logger.debug('not using cache for devices')
+		}
 
 		const users: BinaryNode[] = []
 		jids = Array.from(new Set(jids))
 		for(let jid of jids) {
 			const user = jidDecode(jid).user
 			jid = jidNormalizedUser(jid)
-			if(userDevicesCache.has(user)) {
+			if(userDevicesCache.has(user) && useCache) {
 				const devices: JidWithDevice[] = userDevicesCache.get(user)
 				deviceResults.push(...devices)
 
@@ -211,6 +198,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const assertSessions = async(jids: string[], force: boolean) => {
+		let didFetchNewSession = false
 		let jidsRequiringFetch: string[] = []
 		if(force) {
 			jidsRequiringFetch = jids
@@ -241,33 +229,30 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						content: jidsRequiringFetch.map(
 							jid => ({
 								tag: 'user',
-								attrs: { jid, reason: 'identity' },
+								attrs: { jid },
 							})
 						)
 					}
 				]
 			})
 			await parseAndInjectE2ESessions(result, authState)
-			return true
+
+			didFetchNewSession = true
 		}
 
-		return false
+		return didFetchNewSession
 	}
 
 	const createParticipantNodes = async(jids: string[], bytes: Buffer) => {
-		await assertSessions(jids, false)
-
-		if(authState.keys.isInTransaction()) {
-			await authState.keys.prefetch(
-				'session',
-				jids.map(jid => jidToSignalProtocolAddress(jid).toString())
-			)
-		}
-
+		let shouldIncludeDeviceIdentity = false
 		const nodes = await Promise.all(
 			jids.map(
 				async jid => {
 					const { type, ciphertext } = await encryptSignalProto(jid, bytes, authState)
+					if(type === 'pkmsg') {
+						shouldIncludeDeviceIdentity = true
+					}
+
 					const node: BinaryNode = {
 						tag: 'to',
 						attrs: { jid },
@@ -281,20 +266,23 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			)
 		)
-		return nodes
+		return { nodes, shouldIncludeDeviceIdentity }
 	}
 
 	const relayMessage = async(
 		jid: string,
 		message: proto.IMessage,
-		{ messageId: msgId, participant, additionalAttributes, cachedGroupMetadata }: MessageRelayOptions
+		{ messageId: msgId, participant, additionalAttributes, useUserDevicesCache, cachedGroupMetadata }: MessageRelayOptions
 	) => {
 		const meId = authState.creds.me!.id
+
+		let shouldIncludeDeviceIdentity = false
 
 		const { user, server } = jidDecode(jid)
 		const isGroup = server === 'g.us'
 		const isBroadCast = server === 'broadcast'
 		msgId = msgId || generateMessageID()
+		useUserDevicesCache = useUserDevicesCache !== false
 
 		const encodedMsg = encodeWAMessage(message)
 		const participants: BinaryNode[] = []
@@ -306,6 +294,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		const devices: JidWithDevice[] = []
 		if(participant) {
+			// when the retry request is not for a group
+			// only send to the specific device that asked for a retry
+			// otherwise the message is sent out to every device that should be a recipient
+			if(!isGroup) {
+				additionalAttributes = { ...additionalAttributes, device_fanout: 'false' }
+			}
+
 			const { user, device } = jidDecode(participant)
 			devices.push({ user, device })
 		}
@@ -329,14 +324,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							return groupData
 						})(),
 						(async() => {
-							const result = await authState.keys.get('sender-key-memory', [jid])
-							return result[jid] || { }
+							if(!participant) {
+								const result = await authState.keys.get('sender-key-memory', [jid])
+								return result[jid] || { }
+							}
+
+							return { }
 						})()
 					])
 
 					if(!participant) {
 						const participantsList = groupData.participants.map(p => p.id)
-						const additionalDevices = await getUSyncDevices(participantsList, false)
+						const additionalDevices = await getUSyncDevices(participantsList, useUserDevicesCache, false)
 						devices.push(...additionalDevices)
 					}
 
@@ -344,7 +343,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					// ensure a connection is established with every device
 					for(const { user, device } of devices) {
 						const jid = jidEncode(user, 's.whatsapp.net', device)
-						if(!senderKeyMap[jid]) {
+						if(!senderKeyMap[jid] || !!participant) {
 							senderKeyJids.push(jid)
 							// store that this person has had the sender keys sent to them
 							senderKeyMap[jid] = true
@@ -363,9 +362,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							}
 						})
 
-						participants.push(
-							...(await createParticipantNodes(senderKeyJids, encSenderKeyMsg))
-						)
+						await assertSessions(senderKeyJids, false)
+
+						const result = await createParticipantNodes(senderKeyJids, encSenderKeyMsg)
+						shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
+
+						participants.push(...result.nodes)
 					}
 
 					binaryNodeContent.push({
@@ -389,10 +391,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						devices.push({ user })
 						devices.push({ user: meUser })
 
-						const additionalDevices = await getUSyncDevices([ meId, jid ], true)
+						const additionalDevices = await getUSyncDevices([ meId, jid ], useUserDevicesCache, true)
 						devices.push(...additionalDevices)
 					}
 
+					const allJids: string[] = []
 					const meJids: string[] = []
 					const otherJids: string[] = []
 					for(const { user, device } of devices) {
@@ -403,14 +406,23 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						} else {
 							otherJids.push(jid)
 						}
+
+						allJids.push(jid)
 					}
 
-					const [meNodes, otherNodes] = await Promise.all([
+					await assertSessions(allJids, false)
+
+					const [
+						{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
+						{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
+					] = await Promise.all([
 						createParticipantNodes(meJids, encodedMeMsg),
 						createParticipantNodes(otherJids, encodedMsg)
 					])
 					participants.push(...meNodes)
 					participants.push(...otherNodes)
+
+					shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || s1 || s2
 				}
 
 				if(participants.length) {
@@ -426,17 +438,28 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					attrs: {
 						id: msgId,
 						type: 'text',
-						to: destinationJid,
 						...(additionalAttributes || {})
 					},
 					content: binaryNodeContent
 				}
+				// if the participant to send to is explicitly specified (generally retry recp)
+				// ensure the message is only sent to that person
+				// if a retry receipt is sent to everyone -- it'll fail decryption for everyone else who received the msg
+				if(participant) {
+					if(isJidGroup(destinationJid)) {
+						stanza.attrs.to = destinationJid
+						stanza.attrs.participant = participant
+					} else if(areJidsSameUser(participant, meId)) {
+						stanza.attrs.to = participant
+						stanza.attrs.recipient = destinationJid
+					} else {
+						stanza.attrs.to = participant
+					}
+				} else {
+					stanza.attrs.to = destinationJid
+				}
 
-				const shouldHaveIdentity = !!participants.find(
-					participant => (participant.content! as BinaryNode[]).find(n => n.attrs.type === 'pkmsg')
-				)
-
-				if(shouldHaveIdentity) {
+				if(shouldIncludeDeviceIdentity) {
 					(stanza.content as BinaryNode[]).push({
 						tag: 'device-identity',
 						attrs: { },
@@ -455,12 +478,43 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return msgId
 	}
 
+	const getPrivacyTokens = async(jids: string[]) => {
+		const t = unixTimestampSeconds().toString()
+		const result = await query({
+			tag: 'iq',
+			attrs: {
+				to: S_WHATSAPP_NET,
+				type: 'set',
+				xmlns: 'privacy'
+			},
+			content: [
+				{
+					tag: 'tokens',
+					attrs: { },
+					content: jids.map(
+						jid => ({
+							tag: 'token',
+							attrs: {
+								jid: jidNormalizedUser(jid),
+								t,
+								type: 'trusted_contact'
+							}
+						})
+					)
+				}
+			]
+		})
+
+		return result
+	}
+
 	const waUploadToServer = getWAUploadToServer(config, refreshMediaConn)
 
 	const waitForMsgMediaUpdate = bindWaitForEvent(ev, 'messages.media-update')
 
 	return {
 		...sock,
+		getPrivacyTokens,
 		assertSessions,
 		relayMessage,
 		sendReceipt,
@@ -488,7 +542,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								try {
 									const media = decryptMediaRetryData(result.media!, mediaKey, result.key.id)
 									if(media.result !== proto.MediaRetryNotification.MediaRetryNotificationResultType.SUCCESS) {
-										throw new Boom(`Media re-upload failed by device (${media.result})`, { data: media })
+										const resultStr = proto.MediaRetryNotification.MediaRetryNotificationResultType[media.result]
+										throw new Boom(
+											`Media re-upload failed by device (${resultStr})`,
+											{ data: media, statusCode: MEDIA_RETRY_STATUS_MAP[media.result] || 404 }
+										)
 									}
 
 									content.directPath = media.directPath
@@ -559,7 +617,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				await relayMessage(jid, fullMsg.message, { messageId: fullMsg.key.id!, cachedGroupMetadata: options.cachedGroupMetadata, additionalAttributes })
 				if(config.emitOwnEvents) {
 					process.nextTick(() => {
-						ev.emit('messages.upsert', { messages: [fullMsg], type: 'append' })
+						upsertMessage(fullMsg, 'append')
 					})
 				}
 
@@ -568,3 +626,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 	}
 }
+
+const MEDIA_RETRY_STATUS_MAP = {
+	[proto.MediaRetryNotification.MediaRetryNotificationResultType.SUCCESS]: 200,
+	[proto.MediaRetryNotification.MediaRetryNotificationResultType.DECRYPTION_ERROR]: 412,
+	[proto.MediaRetryNotification.MediaRetryNotificationResultType.NOT_FOUND]: 404,
+	[proto.MediaRetryNotification.MediaRetryNotificationResultType.GENERAL_ERROR]: 418,
+} as const
