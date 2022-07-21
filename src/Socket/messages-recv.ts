@@ -2,10 +2,10 @@
 import { proto } from '../../WAProto'
 import { KEY_BUNDLE_TYPE, MIN_PREKEY_COUNT } from '../Defaults'
 import { MessageReceiptType, MessageRelayOptions, MessageUserReceipt, SocketConfig, WACallEvent, WAMessageKey, WAMessageStubType, WAPatchName } from '../Types'
-import { decodeMediaRetryNode, decodeMessageStanza, delay, encodeBigEndian, generateSignalPubKey, getCallStatusFromNode, getNextPreKeys, getStatusFromReceiptType, isHistoryMsg, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils'
+import { decodeMediaRetryNode, decodeMessageStanza, delay, encodeBigEndian, getCallStatusFromNode, getNextPreKeys, getStatusFromReceiptType, isHistoryMsg, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
 import { cleanMessage } from '../Utils/process-message'
-import { areJidsSameUser, BinaryNode, BinaryNodeAttributes, getAllBinaryNodeChildren, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidEncode, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary'
+import { areJidsSameUser, BinaryNode, BinaryNodeAttributes, getAllBinaryNodeChildren, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary'
 import { extractGroupMetadata } from './groups'
 import { makeMessagesSocket } from './messages-send'
 
@@ -20,7 +20,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		ev,
 		authState,
 		ws,
-		mutationMutex,
 		processingMutex,
 		upsertMessage,
 		resyncAppState,
@@ -63,35 +62,33 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		await sendNode(stanza)
 	}
 
-	const sendRetryRequest = async(node: BinaryNode) => {
+	const sendRetryRequest = async(node: BinaryNode, forceIncludeKeys = false) => {
 		const msgId = node.attrs.id
-		const retryCount = msgRetryMap[msgId] || 1
+
+		let retryCount = msgRetryMap[msgId] || 0
 		if(retryCount >= 5) {
 			logger.debug({ retryCount, msgId }, 'reached retry limit, clearing')
 			delete msgRetryMap[msgId]
 			return
 		}
 
-		msgRetryMap[msgId] = retryCount + 1
+		retryCount += 1
+		msgRetryMap[msgId] = retryCount
 
-		const isGroup = !!node.attrs.participant
 		const { account, signedPreKey, signedIdentityKey: identityKey } = authState.creds
 
-		const deviceIdentity = proto.ADVSignedDeviceIdentity.encode(account).finish()
+		const deviceIdentity = proto.ADVSignedDeviceIdentity.encode({
+			...account,
+			accountSignatureKey: undefined
+		}).finish()
 		await authState.keys.transaction(
 			async() => {
-				const { update, preKeys } = await getNextPreKeys(authState, 1)
-
-				const [keyId] = Object.keys(preKeys)
-				const key = preKeys[+keyId]
-
-				const decFrom = node.attrs.from ? jidDecode(node.attrs.from) : undefined
 				const receipt: BinaryNode = {
 					tag: 'receipt',
 					attrs: {
 						id: msgId,
 						type: 'retry',
-						to: isGroup ? node.attrs.from : jidEncode(decFrom!.user, 's.whatsapp.net', decFrom!.device, 0)
+						to: node.attrs.from
 					},
 					content: [
 						{
@@ -119,27 +116,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					receipt.attrs.participant = node.attrs.participant
 				}
 
-				if(retryCount > 1) {
-					const exec = generateSignalPubKey(Buffer.from(KEY_BUNDLE_TYPE)).slice(0, 1)
+				if(retryCount > 1 || forceIncludeKeys) {
+					const { update, preKeys } = await getNextPreKeys(authState, 1)
+
+					const [keyId] = Object.keys(preKeys)
+					const key = preKeys[+keyId]
+
 					const content = receipt.content! as BinaryNode[]
 					content.push({
 						tag: 'keys',
 						attrs: { },
 						content: [
-							{ tag: 'type', attrs: { }, content: exec },
+							{ tag: 'type', attrs: { }, content: Buffer.from(KEY_BUNDLE_TYPE) },
 							{ tag: 'identity', attrs: { }, content: identityKey.public },
 							xmppPreKey(key, +keyId),
 							xmppSignedPreKey(signedPreKey),
 							{ tag: 'device-identity', attrs: { }, content: deviceIdentity }
 						]
 					})
+
+					ev.emit('creds.update', update)
 				}
 
 				await sendNode(receipt)
 
 				logger.info({ msgAttrs: node.attrs, retryCount }, 'sent retry receipt')
-
-				ev.emit('creds.update', update)
 			}
 		)
 	}
@@ -148,7 +149,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const from = node.attrs.from
 		if(from === S_WHATSAPP_NET) {
 			const countChild = getBinaryNodeChild(node, 'count')
-			const count = +countChild.attrs.value
+			const count = +countChild!.attrs.value
 			const shouldUploadMorePreKeys = count < MIN_PREKEY_COUNT
 
 			logger.debug({ count, shouldUploadMorePreKeys }, 'recv pre-key count')
@@ -249,7 +250,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const update = getBinaryNodeChild(node, 'collection')
 			if(update) {
 				const name = update.attrs.name as WAPatchName
-				await mutationMutex.mutex(() => resyncAppState([name], undefined))
+				await resyncAppState([name], undefined)
 			}
 		}
 
@@ -269,34 +270,42 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		msgRetryMap[key] = (msgRetryMap[key] || 0) + 1
 	}
 
-	const sendMessagesAgain = async(key: proto.IMessageKey, ids: string[]) => {
+	const sendMessagesAgain = async(
+		key: proto.IMessageKey,
+		ids: string[],
+		retryNode: BinaryNode
+	) => {
 		const msgs = await Promise.all(ids.map(id => getMessage({ ...key, id })))
-
-		const participant = key.participant || key.remoteJid
+		const remoteJid = key.remoteJid!
+		const participant = key.participant || remoteJid
 		// if it's the primary jid sending the request
 		// just re-send the message to everyone
 		// prevents the first message decryption failure
-		const sendToAll = !jidDecode(participant).device
+		const sendToAll = !jidDecode(participant)?.device
 		await assertSessions([participant], true)
 
-		if(isJidGroup(key.remoteJid)) {
-			await authState.keys.set({ 'sender-key-memory': { [key.remoteJid]: null } })
+		if(isJidGroup(remoteJid)) {
+			await authState.keys.set({ 'sender-key-memory': { [remoteJid]: null } })
 		}
 
 		logger.debug({ participant, sendToAll }, 'forced new session for retry recp')
 
 		for(let i = 0; i < msgs.length;i++) {
-			if(msgs[i]) {
+			const msg = msgs[i]
+			if(msg) {
 				updateSendMessageAgainCount(ids[i], participant)
 				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i] }
 
 				if(sendToAll) {
 					msgRelayOpts.useUserDevicesCache = false
 				} else {
-					msgRelayOpts.participant = participant
+					msgRelayOpts.participant = {
+						jid: participant,
+						count: +retryNode.attrs.count
+					}
 				}
 
-				await relayMessage(key.remoteJid, msgs[i], msgRelayOpts)
+				await relayMessage(key.remoteJid!, msg, msgRelayOpts)
 			} else {
 				logger.debug({ jid: key.remoteJid, id: ids[i] }, 'recv retry request, but message not available')
 			}
@@ -363,11 +372,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					if(attrs.type === 'retry') {
 						// correctly set who is asking for the retry
 						key.participant = key.participant || attrs.from
+						const retryNode = getBinaryNodeChild(node, 'retry')
 						if(willSendMessageAgain(ids[0], key.participant)) {
 							if(key.fromMe) {
 								try {
 									logger.debug({ attrs, key }, 'recv retry request')
-									await sendMessagesAgain(key, ids)
+									await sendMessagesAgain(key, ids, retryNode!)
 								} catch(error) {
 									logger.error({ key, ids, trace: error.stack }, 'error in sending message again')
 								}
@@ -426,7 +436,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						retryMutex.mutex(
 							async() => {
 								if(ws.readyState === ws.OPEN) {
-									await sendRetryRequest(node)
+									const encNode = getBinaryNodeChild(node, 'enc')
+									await sendRetryRequest(node, !encNode)
 									if(retryRequestDelayMs) {
 										await delay(retryRequestDelayMs)
 									}
@@ -444,21 +455,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						} else if(msg.key.fromMe) { // message was sent by us from a different device
 							type = 'sender'
 							// need to specially handle this case
-							if(isJidUser(msg.key.remoteJid)) {
+							if(isJidUser(msg.key.remoteJid!)) {
 								participant = author
 							}
 						} else if(!sendActiveReceipts) {
 							type = 'inactive'
 						}
 
-						await sendReceipt(msg.key.remoteJid!, participant, [msg.key.id!], type)
+						await sendReceipt(msg.key.remoteJid!, participant!, [msg.key.id!], type)
 
 
 						// send ack for history message
-						const isAnyHistoryMsg = isHistoryMsg(msg.message)
+						const isAnyHistoryMsg = isHistoryMsg(msg.message!)
 						if(isAnyHistoryMsg) {
-							const jid = jidEncode(jidDecode(msg.key.remoteJid!).user, 'c.us')
-							await sendReceipt(jid, undefined, [msg.key.id], 'hist_sync')
+							const jid = jidNormalizedUser(msg.key.remoteJid!)
+							await sendReceipt(jid, undefined, [msg.key.id!], 'hist_sync')
 						}
 					}
 
@@ -517,7 +528,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const key: WAMessageKey = { remoteJid: attrs.from, fromMe: true, id: attrs.id }
 			const msg = await getMessage(key)
 			if(msg) {
-				await relayMessage(key.remoteJid, msg, { messageId: key.id, useUserDevicesCache: false })
+				await relayMessage(key.remoteJid!, msg, { messageId: key.id!, useUserDevicesCache: false })
 			} else {
 				logger.warn({ attrs }, 'could not send message again, as it was not found')
 			}
@@ -538,13 +549,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	// called when all offline notifs are handled
-	ws.on('CB:ib,,offline', (node: BinaryNode) => {
+	ws.on('CB:ib,,offline', async(node: BinaryNode) => {
 		const child = getBinaryNodeChild(node, 'offline')
-		const offlineNotifs = +child.attrs.count
+		const offlineNotifs = +(child?.attrs.count || 0)
 
 		logger.info(`handled ${offlineNotifs} offline messages/notifications`)
+		await ev.flush()
 		ev.emit('connection.update', { receivedPendingNotifications: true })
-		ev.flush()
 	})
 
 	// recv a message
@@ -591,10 +602,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			const protoMsg = proto.WebMessageInfo.fromObject(msg)
-			ev.emit(
-				'messages.upsert',
-				{ messages: [protoMsg], type: call.offline ? 'append' : 'notify' }
-			)
+			upsertMessage(protoMsg, call.offline ? 'append' : 'notify')
 		}
 	})
 

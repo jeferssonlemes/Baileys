@@ -1,10 +1,9 @@
 import { Boom } from '@hapi/boom'
-import EventEmitter from 'events'
 import { promisify } from 'util'
 import WebSocket from 'ws'
 import { proto } from '../../WAProto'
 import { DEF_CALLBACK_PREFIX, DEF_TAG_PREFIX, DEFAULT_ORIGIN, INITIAL_PREKEY_COUNT, MIN_PREKEY_COUNT } from '../Defaults'
-import { AuthenticationCreds, BaileysEventEmitter, BaileysEventMap, DisconnectReason, SocketConfig } from '../Types'
+import { DisconnectReason, SocketConfig } from '../Types'
 import { addTransactionCapability, bindWaitForConnectionUpdate, configureSuccessfulPairing, Curve, generateLoginNode, generateMdTagPrefix, generateRegistrationNode, getCodeFromWSError, getErrorCodeFromStreamError, getNextPreKeysNode, makeNoiseHandler, printQRIfNecessaryListener, promiseTimeout } from '../Utils'
 import { makeEventBuffer } from '../Utils/event-buffer'
 import { assertNodeErrorFree, BinaryNode, encodeBinaryNode, getBinaryNodeChild, getBinaryNodeChildren, S_WHATSAPP_NET } from '../WABinary'
@@ -35,8 +34,7 @@ export const makeSocket = ({
 		agent
 	})
 	ws.setMaxListeners(0)
-	const _ev = new EventEmitter() as BaileysEventEmitter
-	const ev = makeEventBuffer(_ev, logger)
+	const ev = makeEventBuffer(logger)
 	/** ephemeral key pair used to encrypt/decrypt communication. Unique for each connection */
 	const ephemeralKeyPair = Curve.generateKeyPair()
 	/** WA noise protocol wrapper */
@@ -50,6 +48,7 @@ export const makeSocket = ({
 	let epoch = 1
 	let keepAliveReq: NodeJS.Timeout
 	let qrTimer: NodeJS.Timeout
+	let closed = false
 
 	const uqTagId = generateMdTagPrefix()
 	const generateMessageTag = () => `${uqTagId}${epoch++}`
@@ -106,7 +105,7 @@ export const makeSocket = ({
 			})
 
 		if(sendMsg) {
-			sendRawMessage(sendMsg).catch(onClose)
+			sendRawMessage(sendMsg).catch(onClose!)
 		}
 
 		return result
@@ -136,9 +135,9 @@ export const makeSocket = ({
 			)
 			return result as any
 		} finally {
-			ws.off(`TAG:${msgId}`, onRecv)
-			ws.off('close', onErr) // if the socket closes, you'll never receive the message
-			ws.off('error', onErr)
+			ws.off(`TAG:${msgId}`, onRecv!)
+			ws.off('close', onErr!) // if the socket closes, you'll never receive the message
+			ws.off('error', onErr!)
 		}
 	}
 
@@ -168,7 +167,7 @@ export const makeSocket = ({
 		}
 		helloMsg = proto.HandshakeMessage.fromObject(helloMsg)
 
-		logger.info({ browser, helloMsg, registrationId: creds.registrationId }, 'connected to WA Web')
+		logger.info({ browser, helloMsg }, 'connected to WA Web')
 
 		const init = proto.HandshakeMessage.encode(helloMsg).finish()
 
@@ -217,7 +216,7 @@ export const makeSocket = ({
 			]
 		})
 		const countChild = getBinaryNodeChild(result, 'count')
-		return +countChild.attrs.value
+		return +countChild!.attrs.value
 	}
 
 	/** generates and uploads a set of pre-keys to the server */
@@ -282,8 +281,14 @@ export const makeSocket = ({
 	}
 
 	const end = (error: Error | undefined) => {
+		if(closed) {
+			logger.trace({ trace: error?.stack }, 'connection already closed')
+			return
+		}
+
+		closed = true
 		logger.info(
-			{ error, trace: error?.stack },
+			{ trace: error?.stack },
 			error ? 'connection errored' : 'connection closed'
 		)
 
@@ -385,12 +390,6 @@ export const makeSocket = ({
 			]
 		})
 	)
-
-	const emitEventsFromMap = (map: Partial<BaileysEventMap<AuthenticationCreds>>) => {
-		for(const key in map) {
-			ev.emit(key as any, map[key])
-		}
-	}
 
 	/** logout & invalidate connection */
 	const logout = async() => {
@@ -533,7 +532,7 @@ export const makeSocket = ({
 			logger.info({ name }, 'updated pushName')
 			sendNode({
 				tag: 'presence',
-				attrs: { name }
+				attrs: { name: name! }
 			})
 				.catch(err => {
 					logger.warn({ trace: err.stack }, 'error in sending presence update on name change')
@@ -555,7 +554,6 @@ export const makeSocket = ({
 		get user() {
 			return authState.creds.me
 		},
-		emitEventsFromMap,
 		generateMessageTag,
 		query,
 		waitForMessage,

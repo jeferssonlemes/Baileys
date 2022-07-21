@@ -1,3 +1,4 @@
+import EventEmitter from 'events'
 import { Logger } from 'pino'
 import { proto } from '../../WAProto'
 import { AuthenticationCreds, BaileysEvent, BaileysEventEmitter, BaileysEventMap, BufferedEventData, Chat, Contact, WAMessage, WAMessageStatus } from '../Types'
@@ -20,9 +21,20 @@ const BUFFERABLE_EVENT = [
 
 type BufferableEvent = typeof BUFFERABLE_EVENT[number]
 
+/**
+ * A map that contains a list of all events that have been triggered
+ *
+ * Note, this can contain different type of events
+ * this can make processing events extremely efficient -- since everything
+ * can be done in a single transaction
+ */
+type BaileysEventData = Partial<BaileysEventMap<AuthenticationCreds>>
+
 const BUFFERABLE_EVENT_SET = new Set<BaileysEvent>(BUFFERABLE_EVENT)
 
 type BaileysBufferableEventEmitter = BaileysEventEmitter & {
+	/** Use to process events in a batch */
+	process(handler: (events: BaileysEventData) => void | Promise<void>): (() => void)
 	/**
 	 * starts buffering events, call flush() to release them
 	 * @returns true if buffering just started, false if it was already buffering
@@ -39,24 +51,39 @@ type BaileysBufferableEventEmitter = BaileysEventEmitter & {
  * making the data processing more efficient.
  * @param ev the baileys event emitter
  */
-export const makeEventBuffer = (
-	ev: BaileysEventEmitter,
-	logger: Logger
-): BaileysBufferableEventEmitter => {
+export const makeEventBuffer = (logger: Logger): BaileysBufferableEventEmitter => {
+	const ev = new EventEmitter()
 
 	let data = makeBufferData()
 	let isBuffering = false
 
 	let preBufferTask: Promise<any> = Promise.resolve()
 
+	// take the generic event and fire it as a baileys event
+	ev.on('event', (map: BaileysEventData) => {
+		for(const event in map) {
+			ev.emit(event, map[event])
+		}
+	})
+
 	return {
+		process(handler) {
+			const listener = (map: BaileysEventData) => {
+				handler(map)
+			}
+
+			ev.on('event', listener)
+			return () => {
+				ev.off('event', listener)
+			}
+		},
 		emit<T extends BaileysEvent>(event: BaileysEvent, evData: BaileysEventMap<AuthenticationCreds>[T]) {
 			if(isBuffering && BUFFERABLE_EVENT_SET.has(event)) {
 				append(data, event as any, evData, logger)
 				return true
 			}
 
-			return ev.emit(event, evData)
+			return ev.emit('event', { [event]: evData })
 		},
 		processInBuffer(task) {
 			if(isBuffering) {
@@ -69,6 +96,8 @@ export const makeEventBuffer = (
 				isBuffering = true
 				return true
 			}
+
+			return false
 		},
 		async flush() {
 			if(!isBuffering) {
@@ -79,7 +108,12 @@ export const makeEventBuffer = (
 			await preBufferTask
 
 			isBuffering = false
-			flush(data, ev)
+
+			const consolidatedData = consolidateEvents(data)
+			if(Object.keys(consolidatedData).length) {
+				ev.emit('event', consolidatedData)
+			}
+
 			data = makeBufferData()
 
 			logger.trace('released buffered events')
@@ -123,18 +157,27 @@ function append<E extends BufferableEvent>(
 				delete data.chatUpdates[chat.id]
 			}
 
+			if(data.chatDeletes.has(chat.id)) {
+				data.chatDeletes.delete(chat.id)
+			}
+
 			data.chatUpserts[chat.id] = upsert
 		}
 
 		break
 	case 'chats.update':
 		for(const update of eventData as Partial<Chat>[]) {
-			const upsert = data.chatUpserts[update.id!]
+			const chatId = update.id!
+			const upsert = data.chatUpserts[chatId]
 			if(upsert) {
 				concatChats(upsert, update)
 			} else {
-				const chatUpdate = data.chatUpdates[update.id] || { }
-				data.chatUpdates[update.id] = concatChats(chatUpdate, update)
+				const chatUpdate = data.chatUpdates[chatId] || { }
+				data.chatUpdates[chatId] = concatChats(chatUpdate, update)
+			}
+
+			if(data.chatDeletes.has(chatId)) {
+				data.chatDeletes.delete(chatId)
 			}
 		}
 
@@ -168,12 +211,13 @@ function append<E extends BufferableEvent>(
 	case 'contacts.update':
 		const contactUpdates = eventData as BaileysEventMap<any>['contacts.update']
 		for(const update of contactUpdates) {
+			const id = update.id!
 			const upsert = data.contactUpserts[update.id!]
 			if(upsert) {
 				Object.assign(upsert, update)
 			} else {
-				const contactUpdate = data.contactUpdates[update.id] || { }
-				data.contactUpdates[update.id] = Object.assign(contactUpdate, update)
+				const contactUpdate = data.contactUpdates[id] || { }
+				data.contactUpdates[id] = Object.assign(contactUpdate, update)
 			}
 		}
 
@@ -271,8 +315,9 @@ function append<E extends BufferableEvent>(
 	case 'groups.update':
 		const groupUpdates = eventData as BaileysEventMap<any>['groups.update']
 		for(const update of groupUpdates) {
-			const groupUpdate = data.groupUpdates[update.id] || { }
-			data.groupUpdates[update.id] = Object.assign(groupUpdate, update)
+			const id = update.id!
+			const groupUpdate = data.groupUpdates[id] || { }
+			data.groupUpdates[id] = Object.assign(groupUpdate, update)
 		}
 
 		break
@@ -283,12 +328,12 @@ function append<E extends BufferableEvent>(
 	function decrementChatReadCounterIfMsgDidUnread(message: WAMessage) {
 		// decrement chat unread counter
 		// if the message has already been marked read by us
-		const chatId = message.key.remoteJid
+		const chatId = message.key.remoteJid!
 		const chat = data.chatUpdates[chatId] || data.chatUpserts[chatId]
 		if(
-			isRealMessage(message, false)
+			isRealMessage(message)
 			&& shouldIncrementChatUnread(message)
-			&& typeof chat.unreadCount !== 'undefined'
+			&& typeof chat?.unreadCount === 'number'
 			&& chat.unreadCount > 0
 		) {
 			logger.debug({ chatId: chat.id }, 'decrementing chat counter')
@@ -300,73 +345,88 @@ function append<E extends BufferableEvent>(
 	}
 }
 
-function flush(data: BufferedEventData, ev: BaileysEventEmitter) {
+function consolidateEvents(data: BufferedEventData) {
+	const map: BaileysEventData = { }
+
 	const chatUpsertList = Object.values(data.chatUpserts)
-	chatUpsertList.length && ev.emit('chats.upsert', chatUpsertList)
+	if(chatUpsertList.length) {
+		map['chats.upsert'] = chatUpsertList
+	}
 
 	const chatUpdateList = Object.values(data.chatUpdates)
-	chatUpdateList.length && ev.emit('chats.update', chatUpdateList)
+	if(chatUpdateList.length) {
+		map['chats.update'] = chatUpdateList
+	}
 
 	const chatDeleteList = Array.from(data.chatDeletes)
-	chatDeleteList.length && ev.emit('chats.delete', chatDeleteList)
+	if(chatDeleteList.length) {
+		map['chats.delete'] = chatDeleteList
+	}
 
 	const messageUpsertList = Object.values(data.messageUpserts)
 	if(messageUpsertList.length) {
-		const appends: WAMessage[] = []
-		const notifys: WAMessage[] = []
-		for(const { message, type } of messageUpsertList) {
-			const arr = type === 'append' ? appends : notifys
-			arr.push(message)
-		}
-
-		if(appends.length) {
-			ev.emit('messages.upsert', { type: 'append', messages: appends })
-		}
-
-		if(notifys.length) {
-			ev.emit('messages.upsert', { type: 'notify', messages: notifys })
+		const type = messageUpsertList[0].type
+		map['messages.upsert'] = {
+			messages: messageUpsertList.map(m => m.message),
+			type
 		}
 	}
 
 	const messageUpdateList = Object.values(data.messageUpdates)
-	messageUpdateList.length && ev.emit('messages.update', messageUpdateList)
+	if(messageUpdateList.length) {
+		map['messages.update'] = messageUpdateList
+	}
 
 	const messageDeleteList = Object.values(data.messageDeletes)
-	messageDeleteList.length && ev.emit('messages.delete', { keys: messageDeleteList })
+	if(messageDeleteList.length) {
+		map['messages.delete'] = { keys: messageDeleteList }
+	}
 
 	const messageReactionList = Object.values(data.messageReactions).flatMap(
 		({ key, reactions }) => reactions.flatMap(reaction => ({ key, reaction }))
 	)
-	messageReactionList.length && ev.emit('messages.reaction', messageReactionList)
+	if(messageReactionList.length) {
+		map['messages.reaction'] = messageReactionList
+	}
 
 	const messageReceiptList = Object.values(data.messageReceipts).flatMap(
 		({ key, userReceipt }) => userReceipt.flatMap(receipt => ({ key, receipt }))
 	)
-	messageReceiptList.length && ev.emit('message-receipt.update', messageReceiptList)
+	if(messageReceiptList.length) {
+		map['message-receipt.update'] = messageReceiptList
+	}
 
 	const contactUpsertList = Object.values(data.contactUpserts)
-	contactUpsertList.length && ev.emit('contacts.upsert', contactUpsertList)
+	if(contactUpsertList.length) {
+		map['contacts.upsert'] = contactUpsertList
+	}
 
 	const contactUpdateList = Object.values(data.contactUpdates)
-	contactUpdateList.length && ev.emit('contacts.update', contactUpdateList)
+	if(contactUpdateList.length) {
+		map['contacts.update'] = contactUpdateList
+	}
 
 	const groupUpdateList = Object.values(data.groupUpdates)
-	groupUpdateList.length && ev.emit('groups.update', groupUpdateList)
+	if(groupUpdateList.length) {
+		map['groups.update'] = groupUpdateList
+	}
+
+	return map
 }
 
 function concatChats<C extends Partial<Chat>>(a: C, b: C) {
 	if(b.unreadCount === null) {
 		// neutralize unread counter
-		if(a.unreadCount < 0) {
+		if(a.unreadCount! < 0) {
 			a.unreadCount = undefined
 			b.unreadCount = undefined
 		}
 	}
 
-	if(typeof a.unreadCount !== 'undefined' && typeof b.unreadCount !== 'undefined') {
+	if(typeof a.unreadCount === 'number' && typeof b.unreadCount === 'number') {
 		b = { ...b }
-		if(b.unreadCount >= 0) {
-			b.unreadCount = Math.max(b.unreadCount, 0) + Math.max(a.unreadCount, 0)
+		if(b.unreadCount! >= 0) {
+			b.unreadCount = Math.max(b.unreadCount!, 0) + Math.max(a.unreadCount, 0)
 		}
 	}
 

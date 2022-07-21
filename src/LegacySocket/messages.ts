@@ -12,7 +12,7 @@ const STATUS_MAP = {
 } as { [_: string]: WAMessageStatus }
 
 const makeMessagesSocket = (config: LegacySocketConfig) => {
-	const { logger, treatCiphertextMessagesAsReal } = config
+	const { logger } = config
 	const sock = makeChatsSocket(config)
 	const {
 		ev,
@@ -47,7 +47,7 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 		count: number,
 		cursor?: WAMessageCursor
 	) => {
-		let key: WAMessageKey
+		let key: WAMessageKey | undefined
 		if(cursor) {
 			key = 'before' in cursor ? cursor.before : cursor.after
 		}
@@ -61,7 +61,7 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 					jid: jid,
 					kind: !cursor || 'before' in cursor ? 'before' : 'after',
 					count: count.toString(),
-					index: key?.id,
+					index: key?.id!,
 					owner: key?.fromMe === false ? 'false' : 'true',
 				}
 			},
@@ -84,9 +84,9 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 				tag: 'query',
 				attrs: {
 					type: 'media',
-					index: message.key.id,
+					index: message.key.id!,
 					owner: message.key.fromMe ? 'true' : 'false',
-					jid: message.key.remoteJid,
+					jid: message.key.remoteJid!,
 					epoch: currentEpoch().toString()
 				}
 			},
@@ -117,10 +117,7 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 		const protocolMessage = normalizedContent?.protocolMessage
 
 		if(
-			(
-				!!normalizedContent ||
-				(message.messageStubType === WAMessageStubType.CIPHERTEXT && treatCiphertextMessagesAsReal)
-			)
+			!!normalizedContent
 			&& !normalizedContent?.protocolMessage
 			&& !normalizedContent?.reactionMessage
 		) {
@@ -161,7 +158,7 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 					{
 						// the key of the deleted message is updated
 						update: { message: null, key: message.key, messageStubType },
-						key
+						key: key!
 					}
 				])
 				return
@@ -170,7 +167,7 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
             		chatUpdate.ephemeralExpiration = protocolMessage.ephemeralExpiration
 
 				if(isJidGroup(jid)) {
-					emitGroupUpdate({ ephemeralDuration: protocolMessage.ephemeralExpiration || null })
+					emitGroupUpdate({ ephemeralDuration: protocolMessage.ephemeralExpiration || 0 })
 				}
 
 				break
@@ -191,18 +188,18 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 			switch (message.messageStubType) {
 			case WAMessageStubType.CHANGE_EPHEMERAL_SETTING:
 				chatUpdate.ephemeralSettingTimestamp = message.messageTimestamp
-				chatUpdate.ephemeralExpiration = +message.messageStubParameters[0]
+				chatUpdate.ephemeralExpiration = +message.messageStubParameters![0]
 				if(isJidGroup(jid)) {
-					emitGroupUpdate({ ephemeralDuration: +message.messageStubParameters[0] || null })
+					emitGroupUpdate({ ephemeralDuration: +(message.messageStubParameters?.[0] || 0) })
 				}
 
 				break
 			case WAMessageStubType.GROUP_PARTICIPANT_LEAVE:
 			case WAMessageStubType.GROUP_PARTICIPANT_REMOVE:
-				participants = message.messageStubParameters.map (jidNormalizedUser)
+				participants = message.messageStubParameters!.map (jidNormalizedUser)
 				emitParticipantsUpdate('remove')
 				// mark the chat read only if you left the group
-				if(participants.includes(user.id)) {
+				if(participants.includes(user!.id)) {
 					chatUpdate.readOnly = true
 				}
 
@@ -210,24 +207,24 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 			case WAMessageStubType.GROUP_PARTICIPANT_ADD:
 			case WAMessageStubType.GROUP_PARTICIPANT_INVITE:
 			case WAMessageStubType.GROUP_PARTICIPANT_ADD_REQUEST_JOIN:
-				participants = message.messageStubParameters.map (jidNormalizedUser)
-				if(participants.includes(user.id)) {
+				participants = message.messageStubParameters!.map (jidNormalizedUser)
+				if(participants.includes(user!.id)) {
 					chatUpdate.readOnly = null
 				}
 
 				emitParticipantsUpdate('add')
 				break
 			case WAMessageStubType.GROUP_CHANGE_ANNOUNCE:
-				const announce = message.messageStubParameters[0] === 'on'
+				const announce = message.messageStubParameters?.[0] === 'on'
 				emitGroupUpdate({ announce })
 				break
 			case WAMessageStubType.GROUP_CHANGE_RESTRICT:
-				const restrict = message.messageStubParameters[0] === 'on'
+				const restrict = message.messageStubParameters?.[0] === 'on'
 				emitGroupUpdate({ restrict })
 				break
 			case WAMessageStubType.GROUP_CHANGE_SUBJECT:
 			case WAMessageStubType.GROUP_CREATE:
-				chatUpdate.name = message.messageStubParameters[0]
+				chatUpdate.name = message.messageStubParameters?.[0]
 				emitGroupUpdate({ subject: chatUpdate.name })
 				break
 			}
@@ -278,9 +275,9 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 				}
 			]
 		}
-		const isMsgToMe = areJidsSameUser(message.key.remoteJid, state.legacy.user?.id || '')
+		const isMsgToMe = areJidsSameUser(message.key.remoteJid!, state.legacy?.user?.id || '')
 		const flag = isMsgToMe ? WAFlag.acknowledge : WAFlag.ignore // acknowledge when sending message to oneself
-		const mID = message.key.id
+		const mID = message.key.id!
 		const finalState = isMsgToMe ? WAMessageStatus.READ : WAMessageStatus.SERVER_ACK
 
 		message.status = WAMessageStatus.PENDING
@@ -501,7 +498,7 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 						search: txt,
 						count: count.toString(),
 						page: page.toString(),
-						jid: inJid
+						jid: inJid!
 					}
 				},
 				binaryTag: [24, WAFlag.ignore],
@@ -518,7 +515,7 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 			content: AnyMessageContent,
 			options: MiscMessageGenerationOptions & { waitForAck?: boolean } = { waitForAck: true }
 		) => {
-			const userJid = state.legacy.user?.id
+			const userJid = state.legacy?.user?.id
 			if(
 				typeof content === 'object' &&
 				'disappearingMessagesInChat' in content &&
@@ -533,7 +530,7 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 				await setQuery([
 					{
 						tag: 'group',
-						attrs: { id: tag, jid, type: 'prop', author: userJid },
+						attrs: { id: tag, jid, type: 'prop', author: userJid! },
 						content: [
 							{ tag: 'ephemeral', attrs: { value: value.toString() } }
 						]
@@ -545,7 +542,7 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 					content,
 					{
 						logger,
-						userJid: userJid,
+						userJid: userJid!,
 						getUrlInfo: generateUrlInfo,
 						upload: waUploadToServer,
 						mediaCache: config.mediaCache,
@@ -553,7 +550,7 @@ const makeMessagesSocket = (config: LegacySocketConfig) => {
 					}
 				)
 
-				await relayMessage(msg, { waitForAck: options.waitForAck })
+				await relayMessage(msg, { waitForAck: !!options.waitForAck })
 				return msg
 			}
 		}
