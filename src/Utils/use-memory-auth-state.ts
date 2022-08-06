@@ -51,7 +51,7 @@ export const  useMemoryAuthState = (stateString) : { state: AuthenticationState,
 							let value = keys[key]?.[id]
 							if(value) {
 								if(type === 'app-state-sync-key') {
-									value = proto.AppStateSyncKeyData.fromObject(value)
+									value = proto.Message.AppStateSyncKeyData.fromObject(value)
 								}
 
 								dict[id] = value
