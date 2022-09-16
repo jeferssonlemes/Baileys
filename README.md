@@ -118,6 +118,11 @@ type SocketConfig = {
     msgRetryCounterMap?: MessageRetryMap
     /** width for link preview images */
     linkPreviewImageThumbnailWidth: number
+    /**
+     * generate a high quality link preview,
+     * entails uploading the jpegThumbnail to WA
+     * */
+    generateHighQualityLinkPreview: boolean
     /** Should Baileys ask the phone for full history, will be received async */
     syncFullHistory: boolean
     /**
@@ -533,7 +538,7 @@ const sendMsg = await sock.sendMessage(id, templateMessage)
         ptt: true,
         /** Should it send as a disappearing messages. 
          * By default 'chat' -- which follows the setting of the chat */
-        sendEphemeral: 'chat'
+        ephemeralExpiration: WA_DEFAULT_EPHEMERAL
     }
     ```
 ## Forwarding Messages
@@ -660,6 +665,24 @@ WA uses an encrypted form of communication to send chat/app updates. This has be
     []
     )
 
+  ```
+
+- Delete a chat
+  ``` ts
+  const lastMsgInChat = await getLastMessageInChat('123456@s.whatsapp.net') // implement this on your end
+  await sock.chatModify({
+    delete: true,
+    lastMessages: [{ key: lastMsgInChat.key, messageTimestamp: lastMsgInChat.messageTimestamp }]
+  },
+  '123456@s.whatsapp.net')
+  ```
+
+- Pin/unpin a chat
+  ``` ts
+  await sock.chatModify({
+    pin: true // or `false` to unpin
+  },
+  '123456@s.whatsapp.net')
   ```
 
 **Note:** if you mess up one of your updates, WA can log you out of all your devices and you'll have to log in again.

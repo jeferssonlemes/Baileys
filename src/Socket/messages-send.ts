@@ -4,13 +4,17 @@ import NodeCache from 'node-cache'
 import { proto } from '../../WAProto'
 import { WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import { AnyMessageContent, MediaConnInfo, MessageReceiptType, MessageRelayOptions, MiscMessageGenerationOptions, SocketConfig, WAMessageKey } from '../Types'
-import { aggregateMessageKeysNotFromMe, assertMediaContent, bindWaitForEvent, decryptMediaRetryData, encodeWAMessage, encryptMediaRetryRequest, encryptSenderKeyMsgSignalProto, encryptSignalProto, extractDeviceJids, generateMessageID, generateWAMessage, getStatusCodeForMediaRetry, getUrlFromDirectPath, getWAUploadToServer, jidToSignalProtocolAddress, parseAndInjectE2ESessions, patchMessageForMdIfRequired, unixTimestampSeconds } from '../Utils'
+import { aggregateMessageKeysNotFromMe, assertMediaContent, bindWaitForEvent, decryptMediaRetryData, encodeSignedDeviceIdentity, encodeWAMessage, encryptMediaRetryRequest, encryptSenderKeyMsgSignalProto, encryptSignalProto, extractDeviceJids, generateMessageID, generateWAMessage, getStatusCodeForMediaRetry, getUrlFromDirectPath, getWAUploadToServer, jidToSignalProtocolAddress, parseAndInjectE2ESessions, patchMessageForMdIfRequired, unixTimestampSeconds } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
 import { areJidsSameUser, BinaryNode, BinaryNodeAttributes, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidEncode, jidNormalizedUser, JidWithDevice, S_WHATSAPP_NET } from '../WABinary'
 import { makeGroupsSocket } from './groups'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
-	const { logger, linkPreviewImageThumbnailWidth } = config
+	const {
+		logger,
+		linkPreviewImageThumbnailWidth,
+		generateHighQualityLinkPreview
+	} = config
 	const sock = makeGroupsSocket(config)
 	const {
 		ev,
@@ -302,7 +306,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const binaryNodeContent: BinaryNode[] = []
 
 		const devices: JidWithDevice[] = []
-		const extraParticipantNodeAttrs: BinaryNode['attrs'] = { }
 		if(participant) {
 			// when the retry request is not for a group
 			// only send to the specific device that asked for a retry
@@ -310,8 +313,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if(!isGroup) {
 				additionalAttributes = { ...additionalAttributes, device_fanout: 'false' }
 			}
-
-			extraParticipantNodeAttrs.count = participant.count.toString()
 
 			const { user, device } = jidDecode(participant.jid)!
 			devices.push({ user, device })
@@ -376,7 +377,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 						await assertSessions(senderKeyJids, false)
 
-						const result = await createParticipantNodes(senderKeyJids, encSenderKeyMsg, extraParticipantNodeAttrs)
+						const result = await createParticipantNodes(senderKeyJids, encSenderKeyMsg)
 						shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
 
 						participants.push(...result.nodes)
@@ -428,8 +429,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 						{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 					] = await Promise.all([
-						createParticipantNodes(meJids, encodedMeMsg, extraParticipantNodeAttrs),
-						createParticipantNodes(otherJids, encodedMsg, extraParticipantNodeAttrs)
+						createParticipantNodes(meJids, encodedMeMsg),
+						createParticipantNodes(otherJids, encodedMsg)
 					])
 					participants.push(...meNodes)
 					participants.push(...otherNodes)
@@ -475,7 +476,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					(stanza.content as BinaryNode[]).push({
 						tag: 'device-identity',
 						attrs: { },
-						content: proto.ADVSignedDeviceIdentity.encode(authState.creds.account!).finish()
+						content: encodeSignedDeviceIdentity(authState.creds.account!, true)
 					})
 
 					logger.debug({ jid }, 'adding device identity')
@@ -612,7 +613,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						userJid,
 						getUrlInfo: text => getUrlInfo(
 							text,
-							{ thumbnailWidth: linkPreviewImageThumbnailWidth, timeoutMs: 3_000 }
+							{
+								thumbnailWidth: linkPreviewImageThumbnailWidth,
+								timeoutMs: 3_000,
+								uploadImage: generateHighQualityLinkPreview
+									? waUploadToServer
+									: undefined
+							},
+							logger
 						),
 						upload: waUploadToServer,
 						mediaCache: config.mediaCache,

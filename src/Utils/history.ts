@@ -10,11 +10,13 @@ import { downloadContentFromMessage } from './messages-media'
 const inflatePromise = promisify(inflate)
 
 export const downloadHistory = async(msg: proto.Message.IHistorySyncNotification) => {
-	const stream = await downloadContentFromMessage(msg, 'history')
-	let buffer = Buffer.from([])
+	const stream = await downloadContentFromMessage(msg, 'md-msg-hist')
+	const bufferArray: Buffer[] = []
 	for await (const chunk of stream) {
-		buffer = Buffer.concat([buffer, chunk])
+		bufferArray.push(chunk)
 	}
+
+	let buffer = Buffer.concat(bufferArray)
 
 	// decompress buffer
 	buffer = await inflatePromise(buffer)
@@ -43,18 +45,28 @@ export const processHistoryMessage = (
 			}
 
 			const msgs = chat.messages || []
+			delete chat.messages
+
 			for(const item of msgs) {
 				const message = item.message!
 				const uqId = `${message.key.remoteJid}:${message.key.id}`
 				if(!historyCache.has(uqId)) {
 					messages.push(message)
 
-					const curItem = recvChats[message.key.remoteJid!]
+					let curItem = recvChats[message.key.remoteJid!]
 					const timestamp = toNumber(message.messageTimestamp)
-					if(!message.key.fromMe && (!curItem || timestamp > curItem.lastMsgRecvTimestamp)) {
-						recvChats[chat.id] = { lastMsgRecvTimestamp: timestamp }
+					if(!curItem || timestamp > curItem.lastMsgTimestamp) {
+						curItem = { lastMsgTimestamp: timestamp }
+						recvChats[chat.id] = curItem
 						// keep only the most recent message in the chat array
 						chat.messages = [{ message }]
+					}
+
+					if(
+						!message.key.fromMe
+						&& (!curItem?.lastMsgRecvTimestamp || timestamp > curItem.lastMsgRecvTimestamp)
+					) {
+						curItem.lastMsgRecvTimestamp = timestamp
 					}
 
 					historyCache.add(uqId)
