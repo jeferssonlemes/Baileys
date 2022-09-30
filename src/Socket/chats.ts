@@ -717,8 +717,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const upsertMessage = ev.createBufferedFunction(async(msg: WAMessage, type: MessageUpsertType) => {
 		ev.emit('messages.upsert', { messages: [msg], type })
 		
+		// pra evitar ficar disparando a toa
 		if (!!msg.key.remoteJid && msg.key.remoteJid.includes('status@broadcast')) {
-			console.log('ignorando status@broadcast na emissão do evento');
 			return;
 		}
 
