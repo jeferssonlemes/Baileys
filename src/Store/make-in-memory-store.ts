@@ -12,7 +12,7 @@ import makeOrderedDictionary from './make-ordered-dictionary'
 type WASocket = ReturnType<typeof makeMDSocket>
 
 export const waChatKey = (pin: boolean) => ({
-	key: (c: Chat) => (pin ? (c.pin ? '1' : '0') : '') + (c.archive ? '0' : '1') + (c.conversationTimestamp ? c.conversationTimestamp.toString(16).padStart(8, '0') : '') + c.id,
+	key: (c: Chat) => (pin ? (c.pinned ? '1' : '0') : '') + (c.archived ? '0' : '1') + (c.conversationTimestamp ? c.conversationTimestamp.toString(16).padStart(8, '0') : '') + c.id,
 	compare: (k1: string, k2: string) => k2.localeCompare (k1)
 })
 
@@ -70,28 +70,30 @@ export default (
 		ev.on('connection.update', update => {
 			Object.assign(state, update)
 		})
-		ev.on('chats.set', ({ chats: newChats, isLatest }) => {
+
+		ev.on('messaging-history.set', ({
+			chats: newChats,
+			contacts: newContacts,
+			messages: newMessages,
+			isLatest
+		}) => {
 			if(isLatest) {
 				chats.clear()
+
+				for(const id in messages) {
+					delete messages[id]
+				}
 			}
 
 			const chatsAdded = chats.insertIfAbsent(...newChats).length
 			logger.debug({ chatsAdded }, 'synced chats')
-		})
-		ev.on('contacts.set', ({ contacts: newContacts }) => {
+
 			const oldContacts = contactsUpsert(newContacts)
 			for(const jid of oldContacts) {
 				delete contacts[jid]
 			}
 
 			logger.debug({ deletedContacts: oldContacts.size, newContacts }, 'synced contacts')
-		})
-		ev.on('messages.set', ({ messages: newMessages, isLatest }) => {
-			if(isLatest) {
-				for(const id in messages) {
-					delete messages[id]
-				}
-			}
 
 			for(const msg of newMessages) {
 				const jid = msg.key.remoteJid!
@@ -101,6 +103,7 @@ export default (
 
 			logger.debug({ messages: newMessages.length }, 'synced messages')
 		})
+
 		ev.on('contacts.update', updates => {
 			for(const update of updates) {
 				if(contacts[update.id!]) {

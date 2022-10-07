@@ -2,7 +2,7 @@
 import { proto } from '../../WAProto'
 import { KEY_BUNDLE_TYPE, MIN_PREKEY_COUNT } from '../Defaults'
 import { MessageReceiptType, MessageRelayOptions, MessageUserReceipt, SocketConfig, WACallEvent, WAMessageKey, WAMessageStubType, WAPatchName } from '../Types'
-import { decodeMediaRetryNode, decodeMessageStanza, delay, encodeBigEndian, encodeSignedDeviceIdentity, getCallStatusFromNode, getNextPreKeys, getStatusFromReceiptType, isHistoryMsg, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils'
+import { decodeMediaRetryNode, decodeMessageStanza, delay, encodeBigEndian, encodeSignedDeviceIdentity, getCallStatusFromNode, getHistoryMsg, getNextPreKeys, getStatusFromReceiptType, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
 import { cleanMessage } from '../Utils/process-message'
 import { areJidsSameUser, BinaryNode, getAllBinaryNodeChildren, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary'
@@ -189,90 +189,132 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
+	const handleGroupNotification = (
+		participant: string,
+		child: BinaryNode,
+		msg: Partial<proto.IWebMessageInfo>
+	) => {
+		switch (child?.tag) {
+		case 'create':
+			const metadata = extractGroupMetadata(child)
+
+			msg.messageStubType = WAMessageStubType.GROUP_CREATE
+			msg.messageStubParameters = [metadata.subject]
+			msg.key = { participant: metadata.owner }
+
+			ev.emit('chats.upsert', [{
+				id: metadata.id,
+				name: metadata.subject,
+				conversationTimestamp: metadata.creation,
+			}])
+			ev.emit('groups.upsert', [metadata])
+			break
+		case 'ephemeral':
+		case 'not_ephemeral':
+			msg.message = {
+				protocolMessage: {
+					type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING,
+					ephemeralExpiration: +(child.attrs.expiration || 0)
+				}
+			}
+			break
+		case 'promote':
+		case 'demote':
+		case 'remove':
+		case 'add':
+		case 'leave':
+			const stubType = `GROUP_PARTICIPANT_${child.tag!.toUpperCase()}`
+			msg.messageStubType = WAMessageStubType[stubType]
+
+			const participants = getBinaryNodeChildren(child, 'participant').map(p => p.attrs.jid)
+			if(
+				participants.length === 1 &&
+					// if recv. "remove" message and sender removed themselves
+					// mark as left
+					areJidsSameUser(participants[0], participant) &&
+					child.tag === 'remove'
+			) {
+				msg.messageStubType = WAMessageStubType.GROUP_PARTICIPANT_LEAVE
+			}
+
+			msg.messageStubParameters = participants
+			break
+		case 'subject':
+			msg.messageStubType = WAMessageStubType.GROUP_CHANGE_SUBJECT
+			msg.messageStubParameters = [ child.attrs.subject ]
+			break
+		case 'announcement':
+		case 'not_announcement':
+			msg.messageStubType = WAMessageStubType.GROUP_CHANGE_ANNOUNCE
+			msg.messageStubParameters = [ (child.tag === 'announcement') ? 'on' : 'off' ]
+			break
+		case 'locked':
+		case 'unlocked':
+			msg.messageStubType = WAMessageStubType.GROUP_CHANGE_RESTRICT
+			msg.messageStubParameters = [ (child.tag === 'locked') ? 'on' : 'off' ]
+			break
+
+		}
+	}
+
 	const processNotification = async(node: BinaryNode) => {
 		const result: Partial<proto.IWebMessageInfo> = { }
 		const [child] = getAllBinaryNodeChildren(node)
 		const nodeType = node.attrs.type
+		const from = jidNormalizedUser(node.attrs.from)
 
-		if(nodeType === 'w:gp2') {
-			switch (child?.tag) {
-			case 'create':
-				const metadata = extractGroupMetadata(child)
-
-				result.messageStubType = WAMessageStubType.GROUP_CREATE
-				result.messageStubParameters = [metadata.subject]
-				result.key = { participant: metadata.owner }
-
-				ev.emit('chats.upsert', [{
-					id: metadata.id,
-					name: metadata.subject,
-					conversationTimestamp: metadata.creation,
-				}])
-				ev.emit('groups.upsert', [metadata])
-				break
-			case 'ephemeral':
-			case 'not_ephemeral':
-				result.message = {
-					protocolMessage: {
-						type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING,
-						ephemeralExpiration: +(child.attrs.expiration || 0)
-					}
-				}
-				break
-			case 'promote':
-			case 'demote':
-			case 'remove':
-			case 'add':
-			case 'leave':
-				const stubType = `GROUP_PARTICIPANT_${child.tag!.toUpperCase()}`
-				result.messageStubType = WAMessageStubType[stubType]
-
-				const participants = getBinaryNodeChildren(child, 'participant').map(p => p.attrs.jid)
-				if(
-					participants.length === 1 &&
-                        // if recv. "remove" message and sender removed themselves
-                        // mark as left
-                        areJidsSameUser(participants[0], node.attrs.participant) &&
-                        child.tag === 'remove'
-				) {
-					result.messageStubType = WAMessageStubType.GROUP_PARTICIPANT_LEAVE
-				}
-
-				result.messageStubParameters = participants
-				break
-			case 'subject':
-				result.messageStubType = WAMessageStubType.GROUP_CHANGE_SUBJECT
-				result.messageStubParameters = [ child.attrs.subject ]
-				break
-			case 'announcement':
-			case 'not_announcement':
-				result.messageStubType = WAMessageStubType.GROUP_CHANGE_ANNOUNCE
-				result.messageStubParameters = [ (child.tag === 'announcement') ? 'on' : 'off' ]
-				break
-			case 'locked':
-			case 'unlocked':
-				result.messageStubType = WAMessageStubType.GROUP_CHANGE_RESTRICT
-				result.messageStubParameters = [ (child.tag === 'locked') ? 'on' : 'off' ]
-				break
-
-			}
-		} else if(nodeType === 'mediaretry') {
+		switch (nodeType) {
+		case 'w:gp2':
+			handleGroupNotification(node.attrs.participant, child, result)
+			break
+		case 'mediaretry':
 			const event = decodeMediaRetryNode(node)
 			ev.emit('messages.media-update', [event])
-		} else if(nodeType === 'encrypt') {
+			break
+		case 'encrypt':
 			await handleEncryptNotification(node)
-		} else if(nodeType === 'devices') {
+			break
+		case 'devices':
 			const devices = getBinaryNodeChildren(child, 'device')
 			if(areJidsSameUser(child.attrs.jid, authState.creds!.me!.id)) {
 				const deviceJids = devices.map(d => d.attrs.jid)
 				logger.info({ deviceJids }, 'got my own devices')
 			}
-		} else if(nodeType === 'server_sync') {
+
+			break
+		case 'server_sync':
 			const update = getBinaryNodeChild(node, 'collection')
 			if(update) {
 				const name = update.attrs.name as WAPatchName
-				await resyncAppState([name], undefined)
+				await resyncAppState([name], false)
 			}
+
+			break
+		case 'picture':
+			const setPicture = getBinaryNodeChild(node, 'set')
+			const delPicture = getBinaryNodeChild(node, 'delete')
+
+			ev.emit('contacts.update', [{
+				id: from,
+				imgUrl: setPicture ? 'changed' : null
+			}])
+
+			if(isJidGroup(from)) {
+				const node = setPicture || delPicture
+				result.messageStubType = WAMessageStubType.GROUP_CHANGE_ICON
+
+				if(setPicture) {
+					result.messageStubParameters = [ setPicture.attrs.id ]
+				}
+
+				result.participant = node?.attrs.author
+				result.key = {
+					...result.key || {},
+					participant: setPicture?.attrs.author
+				}
+			}
+
+			break
 		}
 
 		if(Object.keys(result).length) {
@@ -430,7 +472,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							id: node.attrs.id,
 							...(msg.key || {})
 						}
-						msg.participant = node.attrs.participant
+						msg.participant ??= node.attrs.participant
 						msg.messageTimestamp = +node.attrs.t
 
 						const fullMsg = proto.WebMessageInfo.fromObject(msg)
@@ -487,7 +529,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 
 						// send ack for history message
-						const isAnyHistoryMsg = isHistoryMsg(msg.message!)
+						const isAnyHistoryMsg = getHistoryMsg(msg.message!)
 						if(isAnyHistoryMsg) {
 							const jid = jidNormalizedUser(msg.key.remoteJid!)
 							await sendReceipt(jid, undefined, [msg.key.id!], 'hist_sync')
@@ -576,6 +618,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		logger.info(`handled ${offlineNotifs} offline messages/notifications`)
 		await ev.flush()
+
 		ev.emit('connection.update', { receivedPendingNotifications: true })
 	})
 
