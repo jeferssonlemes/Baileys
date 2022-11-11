@@ -48,6 +48,8 @@ type BaileysBufferableEventEmitter = BaileysEventEmitter & {
 	flush(): Promise<void>
 	/** waits for the task to complete, before releasing the buffer */
 	processInBuffer(task: Promise<any>)
+	/** is there an ongoing buffer */
+	isBuffering(): boolean
 }
 
 /**
@@ -62,6 +64,7 @@ export const makeEventBuffer = (logger: Logger): BaileysBufferableEventEmitter =
 	let data = makeBufferData()
 	let isBuffering = false
 	let preBufferTask: Promise<any> = Promise.resolve()
+	let preBufferTraces: string[] = []
 
 	// take the generic event and fire it as a baileys event
 	ev.on('event', (map: BaileysEventData) => {
@@ -85,9 +88,10 @@ export const makeEventBuffer = (logger: Logger): BaileysBufferableEventEmitter =
 			return
 		}
 
-		logger.trace('releasing buffered events...')
+		logger.trace({ preBufferTraces }, 'releasing buffered events...')
 		await preBufferTask
 
+		preBufferTraces = []
 		isBuffering = false
 
 		const newData = makeBufferData()
@@ -137,7 +141,11 @@ export const makeEventBuffer = (logger: Logger): BaileysBufferableEventEmitter =
 		processInBuffer(task) {
 			if(isBuffering) {
 				preBufferTask = Promise.allSettled([ preBufferTask, task ])
+				preBufferTraces.push(new Error('').stack!)
 			}
+		},
+		isBuffering() {
+			return isBuffering
 		},
 		buffer,
 		flush,
