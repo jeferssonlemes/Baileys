@@ -1,6 +1,6 @@
 {
   "name": "@adiwajshing/baileys",
-  "version": "5.0.1",
+  "version": "23.43.1",
   "description": "WhatsApp API",
   "homepage": "https://github.com/adiwajshing/Baileys",
   "main": "lib/index.js",
