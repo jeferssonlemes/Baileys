@@ -73,7 +73,7 @@
     "WASignalGroup/*.js"
   ],
   "devDependencies": {
-    "@adiwajshing/eslint-config": "git+https://github.com/adiwajshing/eslint-config",
+    "@adiwajshing/eslint-config": "https://github.com/adiwajshing/eslint-config#5d19499541e81f2d8649ce75711aa9e06bf6374b",
     "@adiwajshing/keyed-db": "^0.2.4",
     "@types/got": "^9.6.11",
     "@types/jest": "^27.5.1",
