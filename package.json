@@ -36,7 +36,7 @@
     "@hapi/boom": "^9.1.3",
     "axios": "^1.3.3",
     "futoin-hkdf": "^1.5.1",
-    "libsignal": "git+https://github.com/adiwajshing/libsignal-node",
+    "libsignal": "https://github.com/adiwajshing/libsignal-node",
     "music-metadata": "^7.12.3",
     "node-cache": "^5.1.2",
     "pino": "^7.0.0",
@@ -73,7 +73,7 @@
     "WASignalGroup/*.js"
   ],
   "devDependencies": {
-    "@adiwajshing/eslint-config": "https://github.com/adiwajshing/eslint-config#5d19499541e81f2d8649ce75711aa9e06bf6374b",
+    "@adiwajshing/eslint-config": "https://github.com/adiwajshing/eslint-config",
     "@adiwajshing/keyed-db": "^0.2.4",
     "@types/got": "^9.6.11",
     "@types/jest": "^27.5.1",
