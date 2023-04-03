@@ -309,11 +309,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		const { user, server } = jidDecode(jid)!
 		const isGroup = server === 'g.us'
+		const isBroadcast = server === 'broadcast'
 		msgId = msgId || generateMessageID()
 		useUserDevicesCache = useUserDevicesCache !== false
 
 		const participants: BinaryNode[] = []
-		const destinationJid = jidEncode(user, isGroup ? 'g.us' : 's.whatsapp.net')
+		const destinationServer = isGroup ? 'g.us' : (isBroadcast ? 'broadcast': 's.whatsapp.net')
+		const destinationJid = jidEncode(user, destinationServer)
 		const binaryNodeContent: BinaryNode[] = []
 		const devices: JidWithDevice[] = []
 
