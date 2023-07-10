@@ -216,7 +216,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				name: metadata.subject,
 				conversationTimestamp: metadata.creation,
 			}])
-			ev.emit('groups.upsert', [metadata])
+			ev.emit('groups.upsert', [{
+				...metadata,
+				author: participant
+			}])
 			break
 		case 'ephemeral':
 		case 'not_ephemeral':
@@ -564,7 +567,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					if(msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
 						retryMutex.mutex(
 							async() => {
-								if(ws.readyState === ws.OPEN) {
+								if(ws.isOpen) {
 									const encNode = getBinaryNodeChild(node, 'enc')
 									await sendRetryRequest(node, !encNode)
 									if(retryRequestDelayMs) {
