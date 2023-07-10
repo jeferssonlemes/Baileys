@@ -30,7 +30,7 @@ jobs:
             To test this PR you can run the following command below:
             ```
             # NPM
-            npm install @whiskeysockets/baileys@${{ github.event.pull_request.head.repo.full_name }}#${{ github.event.pull_request.head.ref }}
+            npm install @allchats/baileys@${{ github.event.pull_request.head.repo.full_name }}#${{ github.event.pull_request.head.ref }}
             # YARN v2
-            yarn add @whiskeysockets/baileys@${{ github.event.pull_request.head.repo.full_name }}#${{ github.event.pull_request.head.ref }}
+            yarn add @allchats/baileys@${{ github.event.pull_request.head.repo.full_name }}#${{ github.event.pull_request.head.ref }}
             ```
