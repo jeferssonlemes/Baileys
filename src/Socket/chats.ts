@@ -174,7 +174,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			content: [{
 				tag: 'contact',
 				attrs: {},
-				content: jid,
+				content: (!jid.startsWith('+')) ? `+${jid}` : jid
 			}],
 		}))
 		const results = await interactiveQuery(list, query)
