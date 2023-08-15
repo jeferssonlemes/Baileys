@@ -357,18 +357,21 @@ export const makeSocket = (config: SocketConfig) => {
 
 		let onOpen: () => void
 		let onClose: (err: Error) => void
-		await new Promise((resolve, reject) => {
-			onOpen = () => resolve(undefined)
-			onClose = mapWebSocketError(reject)
-			ws.on('open', onOpen)
-			ws.on('close', onClose)
-			ws.on('error', onClose)
-		})
-			.finally(() => {
-				ws.off('open', onOpen)
-				ws.off('close', onClose)
-				ws.off('error', onClose)
+		await Promise.race([
+			new Promise((_, reject) => setTimeout(() => reject(new Boom('Connection Timeout')), 45000)),
+			new Promise((resolve, reject) => {
+				onOpen = () => resolve(undefined)
+				onClose = mapWebSocketError(reject)
+				ws.on('open', onOpen)
+				ws.on('close', onClose)
+				ws.on('error', onClose)
 			})
+				.finally(() => {
+					ws.off('open', onOpen)
+					ws.off('close', onClose)
+					ws.off('error', onClose)
+				})
+		])
 	}
 
 	const startKeepAliveRequest = () => (
