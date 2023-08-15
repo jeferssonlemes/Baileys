@@ -358,7 +358,7 @@ export const makeSocket = (config: SocketConfig) => {
 		let onOpen: () => void
 		let onClose: (err: Error) => void
 		await Promise.race([
-			new Promise((_, reject) => setTimeout(() => reject(new Boom('Connection Timeout')), 45000)),
+			new Promise((_, reject) => setTimeout(() => reject(new Boom('Connection Timeout')), 15000)),
 			new Promise((resolve, reject) => {
 				onOpen = () => resolve(undefined)
 				onClose = mapWebSocketError(reject)
