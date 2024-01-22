@@ -48,14 +48,14 @@
     "@hapi/boom": "^9.1.3",
     "audio-decode": "^2.1.3",
     "axios": "^1.3.3",
-    "cache-manager": "^5.2.2",
+    "cache-manager": "4.0.1",
     "futoin-hkdf": "^1.5.1",
     "libphonenumber-js": "^1.10.20",
     "libsignal": "https://github.com/adiwajshing/libsignal-node",
     "music-metadata": "^7.12.3",
     "node-cache": "^5.1.2",
     "pino": "^7.0.0",
-    "protobufjs": "^6.11.3",
+    "protobufjs": "^7.2.4",
     "uuid": "^9.0.0",
     "ws": "^8.13.0"
   },
@@ -84,7 +84,7 @@
     "jimp": "^0.16.1",
     "link-preview-js": "^3.0.0",
     "qrcode-terminal": "^0.12.0",
-    "sharp": "^0.30.5"
+    "sharp": "^0.32.2"
   },
   "peerDependenciesMeta": {
     "@adiwajshing/keyed-db": {

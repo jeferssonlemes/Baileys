@@ -301,6 +301,12 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 		groupSettingUpdate: async(jid: string, setting: 'announcement' | 'not_announcement' | 'locked' | 'unlocked') => {
 			await groupQuery(jid, 'set', [ { tag: setting, attrs: { } } ])
 		},
+		groupMemberAddMode: async(jid: string, mode: 'admin_add' | 'all_member_add') => {
+			await groupQuery(jid, 'set', [ { tag: 'member_add_mode', attrs: { }, content: mode } ])
+		},
+		groupJoinApprovalMode: async(jid: string, mode: 'on' | 'off') => {
+			await groupQuery(jid, 'set', [ { tag: 'membership_approval_mode', attrs: { }, content: [ { tag: 'group_join', attrs: { state: mode } } ] } ])
+		},
 		groupFetchAllParticipating
 	}
 }
@@ -318,13 +324,13 @@ export const extractGroupMetadata = (result: BinaryNode) => {
 
 	const groupId = group.attrs.id.includes('@') ? group.attrs.id : jidEncode(group.attrs.id, 'g.us')
 	const eph = getBinaryNodeChild(group, 'ephemeral')?.attrs.expiration
-	const memberAddMode = getBinaryNodeChildString(group, 'member_add_mode') == "all_member_add"
+	const memberAddMode = getBinaryNodeChildString(group, 'member_add_mode') === 'all_member_add'
 	const metadata: GroupMetadata = {
 		id: groupId,
 		subject: group.attrs.subject,
 		subjectOwner: group.attrs.s_o,
 		subjectTime: +group.attrs.s_t,
-		size: +group.attrs.size,
+		size: getBinaryNodeChildren(group, 'participant').length,
 		creation: +group.attrs.creation,
 		owner: group.attrs.creator ? jidNormalizedUser(group.attrs.creator) : undefined,
 		desc,
@@ -333,6 +339,7 @@ export const extractGroupMetadata = (result: BinaryNode) => {
 		announce: !!getBinaryNodeChild(group, 'announcement'),
 		isCommunity: !!getBinaryNodeChild(group, 'parent'),
 		isCommunityAnnounce: !!getBinaryNodeChild(group, 'default_sub_group'),
+		joinApprovalMode: !!getBinaryNodeChild(group, 'membership_approval_mode'),
 		memberAddMode,
 		participants: getBinaryNodeChildren(group, 'participant').map(
 			({ attrs }) => {

@@ -449,6 +449,12 @@ export const generateWAMessageContent = async(
 			selectableOptionsCount: message.poll.selectableCount,
 			options: message.poll.values.map(optionName => ({ optionName })),
 		}
+	} else if('sharePhoneNumber' in message) {
+		m.protocolMessage = {
+			type: proto.Message.ProtocolMessage.Type.SHARE_PHONE_NUMBER
+		}
+	} else if('requestPhoneNumber' in message) {
+		m.requestPhoneNumberMessage = {}
 	} else {
 		m = await prepareWAMessageMedia(
 			message,
@@ -645,7 +651,7 @@ export const generateWAMessage = async(
 export const getContentType = (content: WAProto.IMessage | undefined) => {
 	if(content) {
 		const keys = Object.keys(content)
-		const key = keys.find(k => (k === 'conversation' || k.endsWith('Message')) && k !== 'senderKeyDistributionMessage')
+		const key = keys.find(k => (k === 'conversation' || k.includes('Message')) && k !== 'senderKeyDistributionMessage')
 		return key as keyof typeof content
 	}
 }
@@ -679,6 +685,7 @@ export const normalizeMessageContent = (content: WAMessageContent | null | undef
 			 || message?.viewOnceMessage
 			 || message?.documentWithCaptionMessage
 			 || message?.viewOnceMessageV2
+			 || message?.viewOnceMessageV2Extension
 			 || message?.editedMessage
 		 )
 	 }
@@ -732,10 +739,7 @@ export const extractMessageContent = (content: WAMessageContent | undefined | nu
 /**
  * Returns the device predicted by message ID
  */
-export const getDevice = (id: string) => {
-	const deviceType = id.length > 21 ? 'android' : id.substring(0, 2) === '3A' ? 'ios' : 'web'
-	return deviceType
-}
+export const getDevice = (id: string) => /^3A.{18}$/.test(id) ? 'ios' : /^3E.{20}$/.test(id) ? 'web' : /^(.{21}|.{32})$/.test(id) ? 'android' : /^.{18}$/.test(id) ? 'desktop' : 'unknown'
 
 /** Upserts a receipt in the message */
 export const updateMessageWithReceipt = (msg: Pick<WAMessage, 'userReceipt'>, receipt: MessageUserReceipt) => {

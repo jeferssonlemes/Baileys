@@ -264,6 +264,22 @@ const processMessage = async(
 				ephemeralExpiration: protocolMsg.ephemeralExpiration || null
 			})
 			break
+		case proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE:
+			const response = protocolMsg.peerDataOperationRequestResponseMessage!
+			if(response) {
+				const { peerDataOperationResult } = response
+				for(const result of peerDataOperationResult!) {
+					const { placeholderMessageResendResponse: retryResponse } = result
+					if(retryResponse) {
+						const webMessageInfo = proto.WebMessageInfo.decode(retryResponse.webMessageInfoBytes!)
+						ev.emit('messages.update', [
+							{ key: webMessageInfo.key, update: { message: webMessageInfo.message } }
+						])
+					}
+				}
+			}
+
+			break
 		}
 	} else if(content?.reactionMessage) {
 		const reaction: proto.IReaction = {
@@ -279,7 +295,7 @@ const processMessage = async(
 		//let actor = whatsappID (message.participant)
 		let participants: string[]
 		const emitParticipantsUpdate = (action: ParticipantAction) => (
-			ev.emit('group-participants.update', { id: jid, participants, action })
+			ev.emit('group-participants.update', { id: jid, author: message.participant!, participants, action })
 		)
 		const emitGroupUpdate = (update: Partial<GroupMetadata>) => {
 			ev.emit('groups.update', [{ id: jid, ...update }])
@@ -333,6 +349,14 @@ const processMessage = async(
 			const code = message.messageStubParameters?.[0]
 			emitGroupUpdate({ inviteCode: code })
 			break
+		case WAMessageStubType.GROUP_MEMBER_ADD_MODE:
+			const memberAddValue = message.messageStubParameters?.[0]
+			emitGroupUpdate({ memberAddMode: memberAddValue === 'all_member_add' })
+			break
+		case WAMessageStubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_MODE:
+			const approvalMode = message.messageStubParameters?.[0]
+			emitGroupUpdate({ joinApprovalMode: approvalMode === 'on' })
+			break
 		}
 	} else if(content?.pollUpdateMessage) {
 		const creationMsgKey = content.pollUpdateMessage.pollCreationMessageKey!
@@ -362,7 +386,7 @@ const processMessage = async(
 								{
 									pollUpdateMessageKey: message.key,
 									vote: voteMsg,
-									senderTimestampMs: message.messageTimestamp,
+									senderTimestampMs: (content.pollUpdateMessage.senderTimestampMs! as Long).toNumber(),
 								}
 							]
 						}

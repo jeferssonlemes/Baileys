@@ -45,6 +45,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const {
 		logger,
 		retryRequestDelayMs,
+		maxMsgRetryCount,
 		getMessage,
 		shouldIgnoreJid
 	} = config
@@ -130,7 +131,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const msgId = node.attrs.id
 
 		let retryCount = msgRetryCache.get<number>(msgId) || 0
-		if(retryCount >= 5) {
+		if(retryCount >= maxMsgRetryCount) {
 			logger.debug({ retryCount, msgId }, 'reached retry limit, clearing')
 			msgRetryCache.del(msgId)
 			return
@@ -300,6 +301,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			msg.messageStubType = WAMessageStubType.GROUP_CHANGE_INVITE_LINK
 			msg.messageStubParameters = [ child.attrs.code ]
 			break
+		case 'member_add_mode':
+			const addMode = child.content
+			if(addMode) {
+				msg.messageStubType = WAMessageStubType.GROUP_MEMBER_ADD_MODE
+				msg.messageStubParameters = [ addMode.toString() ]
+			}
+
+			break
+		case 'membership_approval_mode':
+			const approvalMode: any = getBinaryNodeChild(child, 'group_join')
+			if(approvalMode) {
+				msg.messageStubType = WAMessageStubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_MODE
+				msg.messageStubParameters = [ approvalMode.attrs.state ]
+			}
+
+			break
 		}
 	}
 
@@ -392,16 +409,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						},
 					}
 				})
-			} else if (child.tag === 'blocklist') {
+			} else if(child.tag === 'blocklist') {
 				const blocklists = getBinaryNodeChildren(child, 'item')
 
 				for(const { attrs } of blocklists) {
-						const blocklist = [attrs.jid]
-						const type = (attrs.action === 'block') ? 'add' : 'remove'
-
-						ev.emit('blocklist.update', { blocklist, type })
+					const blocklist = [attrs.jid]
+					const type = (attrs.action === 'block') ? 'add' : 'remove'
+					ev.emit('blocklist.update', { blocklist, type })
 				}
-		}
+			}
 
 			break
 		case 'link_code_companion_reg':
@@ -488,7 +504,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const willSendMessageAgain = (id: string, participant: string) => {
 		const key = `${id}:${participant}`
 		const retryCount = msgRetryCache.get<number>(key) || 0
-		return retryCount < 5
+		return retryCount < maxMsgRetryCount
 	}
 
 	const updateSendMessageAgainCount = (id: string, participant: string) => {
@@ -664,9 +680,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const { fullMessage: msg, category, author, decrypt } = decryptMessageNode(
 			node,
 			authState.creds.me!.id,
+			authState.creds.me!.lid || '',
 			signalRepository,
 			logger,
 		)
+
+		if(msg.message?.protocolMessage?.type === proto.Message.ProtocolMessage.Type.SHARE_PHONE_NUMBER) {
+			if(node.attrs.sender_pn) {
+				ev.emit('chats.phoneNumberShare', { lid: node.attrs.from, jid: node.attrs.sender_pn })
+			}
+		}
+
 		if(shouldIgnoreJid(msg.key.remoteJid!)) {
 			logger.debug({ key: msg.key }, 'ignored message')
 			await sendMessageAck(node)
@@ -744,7 +768,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		if(status === 'offer') {
 			call.isVideo = !!getBinaryNodeChild(infoChild, 'video')
-			call.isGroup = infoChild.attrs.type === 'group'
+			call.isGroup = infoChild.attrs.type === 'group' || !!infoChild.attrs['group-jid']
+			call.groupJid = infoChild.attrs['group-jid']
 			callOfferCache.set(call.id, call)
 		}
 
