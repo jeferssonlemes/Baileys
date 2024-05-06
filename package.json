@@ -37,9 +37,9 @@
     "prepare": "tsc",
     "release": "release-it",
     "test": "jest",
-    "npm-version": "npm version 24.4.23",
+    "npm-version": "npm version 24.4.24",
     "tags-push": "git push --tags",
-    "tag-add": "git tag 24.4.23 -f"
+    "tag-add": "git tag 24.4.24 -f"
   },
   "author": "Adhiraj Singh",
   "license": "MIT",
