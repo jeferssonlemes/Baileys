@@ -1,6 +1,6 @@
 {
   "name": "@allchats/baileys",
-  "version": "24.4.24",
+  "version": "24.5.6",
   "description": "WhatsApp API",
   "homepage": "https://github.com/jeferssonlemes/Baileys",
   "main": "lib/index.js",
@@ -38,9 +38,9 @@
     "prepare": "tsc",
     "release": "release-it",
     "test": "jest",
-    "npm-version": "npm version 24.4.24",
+    "npm-version": "npm version 24.5.6",
     "tags-push": "git push --tags",
-    "tag-add": "git tag 24.4.24 -f"
+    "tag-add": "git tag 24.5.6 -f"
   },
   "author": "Adhiraj Singh",
   "license": "MIT",
