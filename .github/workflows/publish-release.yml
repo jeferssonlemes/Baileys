@@ -44,7 +44,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish in NPM (as `baileys`)
+      - name: Publish in NPM (as `@allchats/baileys`)
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -53,7 +53,7 @@ jobs:
         run: |
           npx json -I -f package.json -e "this.name='@allchats/baileys'"
           npm publish --access public --//registry.npmjs.org/:_authToken=$NPM_TOKEN
-          npx json -I -f package.json -e "this.name='baileys'"
+          npx json -I -f package.json -e "this.name='@allchats/baileys'"
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
