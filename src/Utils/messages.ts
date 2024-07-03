@@ -70,9 +70,9 @@ export const extractUrlFromText = (text: string) => (
 	!URL_EXCLUDE_REGEX.test(text) ? text.match(URL_REGEX)?.[0] : undefined
 )
 
-export const generateLinkPreviewIfRequired = async(text: string, getUrlInfo: MessageGenerationOptions['getUrlInfo'], logger: MessageGenerationOptions['logger']) => {
+export const generateLinkPreviewIfRequired = async(text: string, shouldPreviewLink: MessageGenerationOptions['shouldPreviewLink'], getUrlInfo: MessageGenerationOptions['getUrlInfo'], logger: MessageGenerationOptions['logger']) => {
 	const url = extractUrlFromText(text)
-	if(!!getUrlInfo && url) {
+	if(!!getUrlInfo && url && shouldPreviewLink) {
 		try {
 			const urlInfo = await getUrlInfo(url)
 			return urlInfo
@@ -298,7 +298,7 @@ export const generateWAMessageContent = async(
 
 		let urlInfo = message.linkPreview
 		if(typeof urlInfo === 'undefined') {
-			urlInfo = await generateLinkPreviewIfRequired(message.text, options.getUrlInfo, options.logger)
+			urlInfo = await generateLinkPreviewIfRequired(message.text, options.shouldPreviewLink, options.getUrlInfo, options.logger)
 		}
 
 		if(urlInfo) {
