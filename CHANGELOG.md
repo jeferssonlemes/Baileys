@@ -1,9 +1,9 @@
-## 6.3.1 (2023-07-08)
+## 6.7.4 (2024-06-02)
 
 
 ### Bug Fixes
 
-* Added jid of people who added to the group ([#223](https://github.com/WhiskeySockets/Baileys/issues/223)) ([c2d88fd](https://github.com/WhiskeySockets/Baileys/commit/c2d88fddc605f07f4d6990e0d705e3e65140d439))
+* **fix-routing-info:** initial commit ([#837](https://github.com/WhiskeySockets/Baileys/issues/837)) ([d7037cf](https://github.com/WhiskeySockets/Baileys/commit/d7037cf6fab71d86128c6f3eb4aeaeb3e7eccec3))
 
 
 
