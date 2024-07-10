@@ -1,6 +1,6 @@
 {
   "name": "@allchats/baileys",
-  "version": "24.7.10",
+  "version": "24.7.11",
   "description": "WhatsApp API",
   "homepage": "https://github.com/jeferssonlemes/Baileys",
   "main": "lib/index.js",
