@@ -10,6 +10,7 @@ import {
 	aesEncryptGCM,
 	Curve,
 	decodeMediaRetryNode,
+	decodeMessageNode,
 	decryptMessageNode,
 	delay,
 	derivePairingCodeKey,
@@ -65,6 +66,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		relayMessage,
 		sendReceipt,
 		uploadPreKeys,
+		sendPeerDataOperationMessage,
 	} = sock
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
@@ -99,14 +101,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			stanza.attrs.recipient = attrs.recipient
 		}
 
+		if(!!attrs.type && (tag !== 'message' || getBinaryNodeChild({ tag, attrs, content }, 'unavailable'))) {
+			stanza.attrs.type = attrs.type
+		}
 
-    		if(!!attrs.type && (tag !== 'message' || getBinaryNodeChild({ tag, attrs, content }, 'unavailable'))) {
-      			stanza.attrs.type = attrs.type
-    		}
-
-    		if(tag === 'message' && getBinaryNodeChild({ tag, attrs, content }, 'unavailable')) {
-      			stanza.attrs.from = authState.creds.me!.id
-    		}
+		if(tag === 'message' && getBinaryNodeChild({ tag, attrs, content }, 'unavailable')) {
+			stanza.attrs.from = authState.creds.me!.id
+		}
 
 		logger.debug({ recv: { tag, attrs }, sent: stanza.attrs }, 'sent ack')
 		await sendNode(stanza)
@@ -133,9 +134,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const sendRetryRequest = async(node: BinaryNode, forceIncludeKeys = false) => {
-		const { id: msgId, participant } = node.attrs
+		const { fullMessage } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '')
+		const { key: msgKey } = fullMessage
+		const msgId = msgKey.id!
 
-		const key = `${msgId}:${participant}`
+		const key = `${msgId}:${msgKey?.participant}`
 		let retryCount = msgRetryCache.get<number>(key) || 0
 		if(retryCount >= maxMsgRetryCount) {
 			logger.debug({ retryCount, msgId }, 'reached retry limit, clearing')
@@ -147,6 +150,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		msgRetryCache.set(key, retryCount)
 
 		const { account, signedPreKey, signedIdentityKey: identityKey } = authState.creds
+
+		if(retryCount === 1) {
+			//request a resend via phone
+			const msgId = await requestPlaceholderResend([msgKey])
+			logger.debug(`requested placeholder resend for message ${msgId}`)
+		}
 
 		const deviceIdentity = encodeSignedDeviceIdentity(account!, true)
 		await authState.keys.transaction(
@@ -755,6 +764,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleMessage = async(node: BinaryNode) => {
+		if(getBinaryNodeChild(node, 'unavailable') && !getBinaryNodeChild(node, 'enc')) {
+			await sendMessageAck(node)
+			const { key } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '').fullMessage
+			await requestPlaceholderResend([key])
+			logger.debug('received unavailable message, requested resend')
+		}
+
 		if(shouldIgnoreJid(node.attrs.from) && node.attrs.from !== '@s.whatsapp.net') {
 			logger.debug({ key: node.attrs.key }, 'ignored message')
 			await sendMessageAck(node)
@@ -784,6 +800,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						retryMutex.mutex(
 							async() => {
 								if(ws.isOpen) {
+									if(getBinaryNodeChild(node, 'unavailable')) {
+										return
+									}
+
 									const encNode = getBinaryNodeChild(node, 'enc')
 									await sendRetryRequest(node, !encNode)
 									if(retryRequestDelayMs) {
@@ -827,6 +847,48 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			),
 			sendMessageAck(node)
 		])
+	}
+
+	const fetchMessageHistory = async(
+		count: number,
+		oldestMsgKey: WAMessageKey,
+		oldestMsgTimestamp: number | Long
+	): Promise<string> => {
+		if(!authState.creds.me?.id) {
+			throw new Boom('Not authenticated')
+		}
+
+		const pdoMessage = {
+			historySyncOnDemandRequest: {
+				chatJid: oldestMsgKey.remoteJid,
+				oldestMsgFromMe: oldestMsgKey.fromMe,
+				oldestMsgId: oldestMsgKey.id,
+				oldestMsgTimestampMs: oldestMsgTimestamp,
+				onDemandMsgCount: count
+			},
+			peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.HISTORY_SYNC_ON_DEMAND
+		}
+
+		return sendPeerDataOperationMessage(pdoMessage)
+	}
+
+	const requestPlaceholderResend = async(
+		messageKeys: WAMessageKey[]
+	): Promise<string> => {
+		// TODO: implement locking / cache to prevent multiple requests
+		// TODO: implement 5 second delay
+		if(!authState.creds.me?.id) {
+			throw new Boom('Not authenticated')
+		}
+
+		const pdoMessage = {
+			placeholderMessageResendRequest: messageKeys.map(a => ({
+				messageKey: a
+			})),
+			peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
+		}
+
+		return sendPeerDataOperationMessage(pdoMessage)
 	}
 
 	const handleCall = async(node: BinaryNode) => {
@@ -981,6 +1043,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		...sock,
 		sendMessageAck,
 		sendRetryRequest,
-		rejectCall
+		rejectCall,
+		fetchMessageHistory,
+		requestPlaceholderResend,
 	}
 }

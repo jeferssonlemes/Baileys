@@ -266,15 +266,22 @@ const processMessage = async(
 			break
 		case proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE:
 			const response = protocolMsg.peerDataOperationRequestResponseMessage!
-			if(response) {
+			if (response) {
+				// TODO: IMPLEMENT HISTORY SYNC ETC (sticker uploads etc.).
 				const { peerDataOperationResult } = response
 				for(const result of peerDataOperationResult!) {
 					const { placeholderMessageResendResponse: retryResponse } = result
 					if(retryResponse) {
 						const webMessageInfo = proto.WebMessageInfo.decode(retryResponse.webMessageInfoBytes!)
-						ev.emit('messages.update', [
-							{ key: webMessageInfo.key, update: { message: webMessageInfo.message } }
-						])
+						// maybe messages.upsert is not ideal here - though it's upsert so people should handle already existing messages
+						// the message might come before requesting to the phone and that could be an issue here.
+						// in that case we get 2 events for the same message - or almost same, since the phone can omit or add info
+						ev.emit('messages.upsert', {
+							messages: [
+								webMessageInfo
+							],
+							type: 'notify' // TODO: DECIDE IF THIS SHOULD BE APPEND OR NOTIFY
+						})
 					}
 				}
 			}
