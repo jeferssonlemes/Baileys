@@ -3,9 +3,9 @@ import { Logger } from 'pino'
 import { proto } from '../../WAProto'
 import { SignalRepository, WAMessageKey } from '../Types'
 import { areJidsSameUser, BinaryNode, isJidBroadcast, isJidGroup, isJidNewsletter, isJidStatusBroadcast, isJidUser, isLidUser } from '../WABinary'
-import { BufferJSON, unpadRandomMax16 } from './generics'
+import { unpadRandomMax16 } from './generics'
 
-const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node'
+export const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node'
 
 type MessageType = 'chat' | 'peer_broadcast' | 'other_broadcast' | 'group' | 'direct_peer_status' | 'other_status' | 'newsletter'
 
@@ -82,11 +82,15 @@ export function decodeMessageNode(
 
 		chatId = from
 		author = participant
+	} else if(isJidNewsletter(from)) {
+		msgType = 'newsletter'
+		chatId = from
+		author = from
 	} else {
 		throw new Boom('Unknown message type', { data: stanza })
 	}
 
-	const fromMe = isJidNewsletter(from) ? !!stanza.attrs?.is_sender || false : (isLidUser(from) ? isMeLid : isMe)(stanza.attrs.participant || stanza.attrs.from)
+	const fromMe = (isLidUser(from) ? isMeLid : isMe)(stanza.attrs.participant || stanza.attrs.from)
 	const pushname = stanza?.attrs?.notify
 
 	const key: WAMessageKey = {
@@ -207,7 +211,7 @@ export const decryptMessageNode = (
 			// if nothing was found to decrypt
 			if(!decryptables) {
 				fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
-				fullMessage.messageStubParameters = [NO_MESSAGE_FOUND_ERROR_TEXT, JSON.stringify(stanza, BufferJSON.replacer)]
+				fullMessage.messageStubParameters = [NO_MESSAGE_FOUND_ERROR_TEXT]
 			}
 		}
 	}
