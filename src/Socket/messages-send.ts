@@ -18,7 +18,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		patchMessageBeforeSending,
 		cachedGroupMetadata,
 	} = config
-	const sock = makeNewsletterSocket(config)
+	const sock = makeGroupsSocket(config)
 	const {
 		ev,
 		authState,
@@ -343,7 +343,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const { user, server } = jidDecode(jid)!
 		const statusJid = 'status@broadcast'
 		const isGroup = server === 'g.us'
-		const isNewsletter = server === 'newsletter'
 		const isStatus = jid === statusJid
 		const isLid = server === 'lid'
 
@@ -352,7 +351,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		useCachedGroupMetadata = useCachedGroupMetadata !== false && !isStatus
 
 		const participants: BinaryNode[] = []
-		const destinationJid = (!isStatus) ? jidEncode(user, isLid ? 'lid' : isGroup ? 'g.us' : isNewsletter ? 'newsletter' : 's.whatsapp.net') : statusJid
+		const destinationJid = (!isStatus) ? jidEncode(user, isLid ? 'lid' : isGroup ? 'g.us' : 's.whatsapp.net') : statusJid
 		const binaryNodeContent: BinaryNode[] = []
 		const devices: JidWithDevice[] = []
 
@@ -469,15 +468,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					})
 
 					await authState.keys.set({ 'sender-key-memory': { [jid]: senderKeyMap } })
-				} else if(isNewsletter) {
-					const patched = await patchMessageBeforeSending(message, [])
-					const bytes = encodeNewsletterMessage(patched)
-
-					binaryNodeContent.push({
-						tag: 'plaintext',
-						attrs: {},
-						content: bytes
-					})
 				} else {
 					const { user: meUser, device: meDevice } = jidDecode(meId)!
 
