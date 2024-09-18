@@ -36,8 +36,8 @@ jobs:
           echo "wa_version=$WA_VERSION" >> $GITHUB_OUTPUT
           echo "wa_js_url=$WA_JS_URL" >> $GITHUB_OUTPUT
 
-      - name: GenerateStatics
-        run: yarn gen:protobuf
+      # - name: GenerateStatics
+      #   run: yarn gen:protobuf
 
       - name: Update baileys-version.json
         run: |
