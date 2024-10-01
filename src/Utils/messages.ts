@@ -62,6 +62,8 @@ const MessageTypeProto = {
    	'document': WAProto.Message.DocumentMessage,
 } as const
 
+const ButtonType = proto.Message.ButtonsMessage.HeaderType
+
 /**
  * Uses a regex to test whether the string contains a URL, and returns the URL if it does.
  * @param text eg. hello https://google.com
@@ -513,6 +515,97 @@ export const generateWAMessageContent = async(
 		)
 	}
 
+	if('buttons' in message && !!message.buttons) {
+		const buttonsMessage: proto.Message.IButtonsMessage = {
+			buttons: message.buttons!.map(b => ({ ...b, type: proto.Message.ButtonsMessage.Button.Type.RESPONSE }))
+		}
+		if('text' in message) {
+			buttonsMessage.contentText = message.text
+			buttonsMessage.headerType = ButtonType.EMPTY
+		} else {
+			if('caption' in message) {
+				buttonsMessage.contentText = message.caption
+			}
+
+			const type = Object.keys(m)[0].replace('Message', '').toUpperCase()
+			buttonsMessage.headerType = ButtonType[type]
+
+			Object.assign(buttonsMessage, m)
+		}
+
+		if('footer' in message && !!message.footer) {
+			buttonsMessage.footerText = message.footer
+		}
+
+		m = { buttonsMessage }
+
+		m = {
+            documentWithCaptionMessage: {
+                message: {
+                    buttonsMessage
+                }
+            }
+        }
+
+	}
+	
+	if('templateButtons' in message && !!message.templateButtons) {
+		const msg: proto.Message.TemplateMessage.IHydratedFourRowTemplate = {
+			hydratedButtons: message.templateButtons
+		}
+
+		if('text' in message) {
+			msg.hydratedContentText = message.text
+		} else {
+
+			if('caption' in message) {
+				msg.hydratedContentText = message.caption
+			}
+
+			Object.assign(msg, m)
+		}
+
+		if('footer' in message && !!message.footer) {
+			msg.hydratedFooterText = message.footer
+		}
+
+		m = {
+			documentWithCaptionMessage: {
+				message: {
+					messageContextInfo: {
+						deviceListMetadataVersion: 2,
+						deviceListMetadata: {}
+					},
+					templateMessage: {
+						hydratedTemplate: msg,
+					}
+				}
+			}
+		};
+	}
+
+	if ('sections' in message && !!message.sections) {
+        const listMessage = {
+			sections: message.sections,
+			buttonText: message.buttonText,
+			title: message.title,
+			footerText: message.footer,
+			description: message.text,
+			listType: proto.Message.ListMessage.ListType.SINGLE_SELECT
+		};
+        m = {
+			documentWithCaptionMessage: {
+				message: {
+					messageContextInfo: {
+						deviceListMetadata: {},
+						deviceListMetadataVersion: 2,
+					},
+					listMessage
+				}
+			}
+		};
+    }
+	
 	if('viewOnce' in message && !!message.viewOnce) {
 		m = { viewOnceMessage: { message: m } }
 	}
@@ -708,21 +801,21 @@ export const extractMessageContent = (content: WAMessageContent | undefined | nu
 
 	content = normalizeMessageContent(content)
 
-	if(content?.buttonsMessage) {
-	  return extractFromTemplateMessage(content.buttonsMessage)
-	}
+	if (content?.documentWithCaptionMessage?.message?.templateMessage?.hydratedTemplate) {
+        return extractFromTemplateMessage(content?.documentWithCaptionMessage?.message?.templateMessage?.hydratedTemplate)
+    }
 
-	if(content?.templateMessage?.hydratedFourRowTemplate) {
-		return extractFromTemplateMessage(content?.templateMessage?.hydratedFourRowTemplate)
-	}
+    if (content?.documentWithCaptionMessage?.message?.buttonsMessage) {
+        return extractFromTemplateMessage(content?.documentWithCaptionMessage?.message?.buttonsMessage)
+    }
 
-	if(content?.templateMessage?.hydratedTemplate) {
-		return extractFromTemplateMessage(content?.templateMessage?.hydratedTemplate)
-	}
+    if (content?.viewOnceMessage?.message?.templateMessage?.hydratedTemplate) {
+        return extractFromTemplateMessage(content?.viewOnceMessage?.message?.templateMessage?.hydratedTemplate)
+    }
 
-	if(content?.templateMessage?.fourRowTemplate) {
-		return extractFromTemplateMessage(content?.templateMessage?.fourRowTemplate)
-	}
+    if (content?.viewOnceMessage?.message?.buttonsMessage) {
+        return extractFromTemplateMessage(content?.viewOnceMessage?.message?.buttonsMessage)
+    }
 
 	return content
 }
