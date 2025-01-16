@@ -1,5 +1,5 @@
 {
-    "extends": "@adiwajshing",
+    "extends": "@whiskeysockets",
     "parserOptions": {
         "sourceType": "module",
         "project": "./tsconfig.json"
@@ -21,6 +21,7 @@
         "@typescript-eslint/no-unnecessary-type-assertion": [
             "warn"
         ],
+        "no-restricted-syntax": "off",
         "keyword-spacing": [
             "warn"
         ]
