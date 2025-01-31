@@ -20,6 +20,8 @@ import {
 	getHistoryMsg,
 	getNextPreKeys,
 	getStatusFromReceiptType, hkdf,
+	MISSING_KEYS_ERROR_TEXT,
+	NACK_REASONS,
 	NO_MESSAGE_FOUND_ERROR_TEXT,
 	unixTimestampSeconds,
 	xmppPreKey,
@@ -89,14 +91,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	let sendActiveReceipts = false
 
-	const sendMessageAck = async({ tag, attrs, content }: BinaryNode) => {
+	const sendMessageAck = async({ tag, attrs, content }: BinaryNode, errorCode?: number) => {
 		const stanza: BinaryNode = {
 			tag: 'ack',
 			attrs: {
 				id: attrs.id,
 				to: attrs.from,
-				class: tag,
+				class: tag
 			}
+		}
+
+		if(!!errorCode) {
+		  stanza.attrs.error = errorCode.toString()
 		}
 
 		if(!!attrs.participant) {
@@ -107,7 +113,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			stanza.attrs.recipient = attrs.recipient
 		}
 
-		if(!!attrs.type && (tag !== 'message' || getBinaryNodeChild({ tag, attrs, content }, 'unavailable'))) {
+		if(!!attrs.type && (tag !== 'message' || getBinaryNodeChild({ tag, attrs, content }, 'unavailable') || errorCode !== 0)) {
 			stanza.attrs.type = attrs.type
 		}
 
@@ -652,7 +658,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-	const handleReceipt = async(node: BinaryNode) => {
+	const handleReceipt = async(node: BinaryNode, offline: boolean) => {
 		const { attrs, content } = node
 		const isNodeFromMe = areJidsSameUser(attrs.participant || attrs.from, authState.creds.me?.id)
 		const remoteJid = !isNodeFromMe || isJidGroup(attrs.from) || attrs.type === 'read' ? attrs.from : attrs.recipient
@@ -743,7 +749,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-	const handleNotification = async(node: BinaryNode) => {
+	const handleNotification = async(node: BinaryNode, offline: boolean) => {
 		const remoteJid = node.attrs.from
 		if(shouldIgnoreJid(remoteJid) && remoteJid !== '@s.whatsapp.net') {
 			logger.debug({ remoteJid, id: node.attrs.id }, 'ignored notification')
@@ -779,7 +785,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-	const handleMessage = async(node: BinaryNode) => {
+	const handleMessage = async(node: BinaryNode, offline: boolean) => {
+  	if(offline) {
+    	await sendMessageAck(node)
+			return
+  	}
+
 		if(shouldIgnoreJid(node.attrs.from) && node.attrs.from !== '@s.whatsapp.net') {
 			logger.debug({ key: node.attrs.key }, 'ignored message')
 			await sendMessageAck(node)
@@ -827,6 +838,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						await decrypt()
 						// message failed to decrypt
 						if(msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
+						  if(msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {
+								return sendMessageAck(node, NACK_REASONS.ParsingError)
+							}
+
 							retryMutex.mutex(
 								async() => {
 									if(ws.isOpen) {
@@ -872,12 +887,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 						cleanMessage(msg, authState.creds.me!.id)
 
+						await sendMessageAck(node)
+
 						await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
 					}
 				)
 			])
-		} finally {
-			await sendMessageAck(node)
+		} catch(error) {
+			logger.error({ error, node }, 'error in handling message')
 		}
 	}
 
@@ -1021,35 +1038,98 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const processNodeWithBuffer = async<T>(
 		node: BinaryNode,
 		identifier: string,
-		exec: (node: BinaryNode) => Promise<T>
+		exec: (node: BinaryNode, offline: boolean) => Promise<T>
 	) => {
 		ev.buffer()
 		await execTask()
 		ev.flush()
 
 		function execTask() {
-			return exec(node)
+			return exec(node, false)
 				.catch(err => onUnexpectedError(err, identifier))
+		}
+	}
+
+	type MessageType = 'message' | 'call' | 'receipt' | 'notification'
+
+	type OfflineNode = {
+		type: MessageType
+		node: BinaryNode
+	}
+
+	const makeOfflineNodeProcessor = () => {
+		const nodeProcessorMap: Map<MessageType, (node: BinaryNode, offline: boolean) => Promise<void>> = new Map([
+			['message', handleMessage],
+			['call', handleCall],
+			['receipt', handleReceipt],
+			['notification', handleNotification]
+		])
+		const nodes: OfflineNode[] = []
+		let isProcessing = false
+
+		const enqueue = (type: MessageType, node: BinaryNode) => {
+			nodes.push({ type, node })
+
+			if(isProcessing) {
+				return
+			}
+
+			isProcessing = true
+
+			const promise = async() => {
+				while(nodes.length && ws.isOpen) {
+					const { type, node } = nodes.shift()!
+
+					const nodeProcessor = nodeProcessorMap.get(type)
+
+					if(!nodeProcessor) {
+						onUnexpectedError(
+							new Error(`unknown offline node type: ${type}`),
+							'processing offline node'
+						)
+						continue
+					}
+
+					await nodeProcessor(node, true)
+				}
+
+				isProcessing = false
+			}
+
+			promise().catch(error => onUnexpectedError(error, 'processing offline nodes'))
+		}
+
+		return { enqueue }
+	}
+
+	const offlineNodeProcessor = makeOfflineNodeProcessor()
+
+	const processNode = (type: MessageType, node: BinaryNode, identifier: string, exec: (node: BinaryNode, offline: boolean) => Promise<void>) => {
+		const isOffline = !!node.attrs.offline
+
+		if(isOffline) {
+			offlineNodeProcessor.enqueue(type, node)
+		} else {
+			processNodeWithBuffer(node, identifier, exec)
 		}
 	}
 
 	// recv a message
 	ws.on('CB:message', (node: BinaryNode) => {
-		processNodeWithBuffer(node, 'processing message', handleMessage)
+		processNode('message', node, 'processing message', handleMessage)
 	})
 
 	ws.on('CB:call', async(node: BinaryNode) => {
-		processNodeWithBuffer(node, 'handling call', handleCall)
+		processNode('call', node, 'handling call', handleCall)
 	})
 
 	ws.on('CB:receipt', node => {
-		processNodeWithBuffer(node, 'handling receipt', handleReceipt)
+		processNode('receipt', node, 'handling receipt', handleReceipt)
 	})
 
 	ws.on('CB:notification', async(node: BinaryNode) => {
-		processNodeWithBuffer(node, 'handling notification', handleNotification)
+		processNode('notification', node, 'handling notification', handleNotification)
 	})
-
 	ws.on('CB:ack,class:message', (node: BinaryNode) => {
 		handleBadAck(node)
 			.catch(error => onUnexpectedError(error, 'handling bad ack'))
