@@ -1,6 +1,6 @@
 
+import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
-import NodeCache from 'node-cache'
 import { proto } from '../../WAProto'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import { AnyMessageContent, MediaConnInfo, MessageReceiptType, MessageRelayOptions, MiscMessageGenerationOptions, SocketConfig, WAMessageKey } from '../Types'
@@ -281,22 +281,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		message: proto.IMessage,
 		extraAttrs?: BinaryNode['attrs']
 	) => {
-		const patched = await patchMessageBeforeSending(message, jids)
-		const bytes = encodeWAMessage(patched)
+		let patched = await patchMessageBeforeSending(message, jids)
+		if(!Array.isArray(patched)) {
+		  patched = [{ recipientJid: jids[0], ...patched }]
+		}
 
 		let shouldIncludeDeviceIdentity = false
 		const nodes = await Promise.all(
-			jids.map(
-				async jid => {
+			patched.map(
+				async patchedMessageWithJid => {
+				  const { recipientJid: jid, ...patchedMessage } = patchedMessageWithJid
+					const bytes = encodeWAMessage(patchedMessage)
 					const { type, ciphertext } = await signalRepository
-						.encryptMessage({ jid, data: bytes })
+						.encryptMessage({ jid: jid!, data: bytes })
 					if(type === 'pkmsg') {
 						shouldIncludeDeviceIdentity = true
 					}
 
 					const node: BinaryNode = {
 						tag: 'to',
-						attrs: { jid },
+						attrs: { jid: jid! },
 						content: [{
 							tag: 'enc',
 							attrs: {
@@ -402,7 +406,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						devices.push(...additionalDevices)
 					}
 
-					const patched = await patchMessageBeforeSending(message, devices.map(d => jidEncode(d.user, isLid ? 'lid' : 's.whatsapp.net', d.device)))
+					const patched = await patchMessageBeforeSending(message)
+
+					if(Array.isArray(patched)) {
+					  throw new Boom('Per-jid patching is not supported in groups')
+					}
+
 					const bytes = encodeWAMessage(patched)
 
 					const { ciphertext, senderKeyDistributionMessage } = await signalRepository.encryptGroupMessage(
@@ -699,30 +708,30 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const content = assertMediaContent(message.message)
 			const mediaKey = content.mediaKey!
 			const meId = authState.creds.me!.id
-			const node = encryptMediaRetryRequest(message.key, mediaKey, meId)
+			const node = await encryptMediaRetryRequest(message.key, mediaKey, meId)
 
 			let error: Error | undefined = undefined
 			await Promise.all(
 				[
 					sendNode(node),
-					waitForMsgMediaUpdate(update => {
+					waitForMsgMediaUpdate(async(update) => {
 						const result = update.find(c => c.key.id === message.key.id)
 						if(result) {
 							if(result.error) {
 								error = result.error
 							} else {
 								try {
-									const media = decryptMediaRetryData(result.media!, mediaKey, result.key.id!)
+									const media = await decryptMediaRetryData(result.media!, mediaKey, result.key.id!)
 									if(media.result !== proto.MediaRetryNotification.ResultType.SUCCESS) {
-										const resultStr = proto.MediaRetryNotification.ResultType[media.result]
+										const resultStr = proto.MediaRetryNotification.ResultType[media.result!]
 										throw new Boom(
 											`Media re-upload failed by device (${resultStr})`,
-											{ data: media, statusCode: getStatusCodeForMediaRetry(media.result) || 404 }
+											{ data: media, statusCode: getStatusCodeForMediaRetry(media.result!) || 404 }
 										)
 									}
 
 									content.directPath = media.directPath
-									content.url = getUrlFromDirectPath(content.directPath)
+									content.url = getUrlFromDirectPath(content.directPath!)
 
 									logger.debug({ directPath: media.directPath, key: result.key }, 'media update successful')
 								} catch(err) {
