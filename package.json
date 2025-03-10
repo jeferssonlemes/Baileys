@@ -1,6 +1,6 @@
 {
   "name": "@allchats/baileys",
-  "version": "25.1.7",
+  "version": "25.1.8",
   "description": "WhatsApp API",
   "homepage": "https://github.com/jeferssonlemes/Baileys",
   "main": "lib/index.js",
@@ -93,6 +93,9 @@
     "sharp": "^0.32.6"
   },
   "peerDependenciesMeta": {
+    "audio-decode": {
+      "optional": true
+    },
     "@adiwajshing/keyed-db": {
       "optional": true
     },
