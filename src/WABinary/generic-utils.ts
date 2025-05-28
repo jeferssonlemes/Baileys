@@ -5,7 +5,7 @@ import { BinaryNode } from './types'
 // some extra useful utilities
 
 export const getBinaryNodeChildren = (node: BinaryNode | undefined, childTag: string) => {
-	if(Array.isArray(node?.content)) {
+	if(node && Array.isArray(node.content)) {
 		return node.content.filter(item => item.tag === childTag)
 	}
 
