@@ -25,7 +25,7 @@ import {
 } from '../Types'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary'
 import { sha256 } from './crypto'
-import { generateMessageID, getKeyAuthor, unixTimestampSeconds } from './generics'
+import { generateMessageIDV2, getKeyAuthor, unixTimestampSeconds } from './generics'
 import { ILogger } from './logger'
 import { downloadContentFromMessage, encryptedStream, generateThumbnail, getAudioDuration, getAudioWaveform, MediaDownloadOptions } from './messages-media'
 
@@ -160,12 +160,11 @@ export const prepareWAMessageMedia = async(
 	const requiresOriginalForSomeProcessing = requiresDurationComputation || requiresThumbnailComputation
 	const {
 		mediaKey,
-		encWriteStream,
-		bodyPath,
+		encFilePath,
+		originalFilePath,
 		fileEncSha256,
 		fileSha256,
-		fileLength,
-		didSaveToTmpPath
+		fileLength
 	} = await encryptedStream(
 		uploadData.media,
 		options.mediaTypeOverride || mediaType,
@@ -180,7 +179,7 @@ export const prepareWAMessageMedia = async(
 	const [{ mediaUrl, directPath }] = await Promise.all([
 		(async() => {
 			const result = await options.upload(
-				encWriteStream,
+				encFilePath,
 				{ fileEncSha256B64, mediaType, timeoutMs: options.mediaUploadTimeoutMs }
 			)
 			logger?.debug({ mediaType, cacheableKey }, 'uploaded media')
@@ -192,7 +191,7 @@ export const prepareWAMessageMedia = async(
 					const {
 						thumbnail,
 						originalImageDimensions
-					} = await generateThumbnail(bodyPath!, mediaType as 'image' | 'video', options)
+					} = await generateThumbnail(originalFilePath!, mediaType as 'image' | 'video', options)
 					uploadData.jpegThumbnail = thumbnail
 					if(!uploadData.width && originalImageDimensions) {
 						uploadData.width = originalImageDimensions.width
@@ -204,12 +203,12 @@ export const prepareWAMessageMedia = async(
 				}
 
 				if(requiresDurationComputation) {
-					uploadData.seconds = await getAudioDuration(bodyPath!)
+					uploadData.seconds = await getAudioDuration(originalFilePath!)
 					logger?.debug('computed audio duration')
 				}
 
 				if(requiresWaveformProcessing) {
-					uploadData.waveform = await getAudioWaveform(bodyPath!, logger)
+					uploadData.waveform = await getAudioWaveform(originalFilePath!, logger)
 					logger?.debug('processed waveform')
 				}
 
@@ -224,16 +223,15 @@ export const prepareWAMessageMedia = async(
 	])
 		.finally(
 			async() => {
-				encWriteStream.destroy()
-				// remove tmp files
-				if(didSaveToTmpPath && bodyPath) {
-					try {
-						await fs.access(bodyPath)
-						await fs.unlink(bodyPath)
-						logger?.debug('removed tmp file')
-					} catch(error) {
-						logger?.warn('failed to remove tmp file')
+				try {
+					await fs.unlink(encFilePath)
+					if(originalFilePath) {
+						await fs.unlink(originalFilePath)
 					}
+
+					logger?.debug('removed tmp files')
+				} catch(error) {
+					logger?.warn('failed to remove tmp file')
 				}
 			}
 		)
@@ -702,7 +700,7 @@ export const generateWAMessageFromContent = (
 		key: {
 			remoteJid: jid,
 			fromMe: true,
-			id: options?.messageId || generateMessageID(),
+			id: options?.messageId || generateMessageIDV2(),
 		},
 		message: message,
 		messageTimestamp: timestamp,
