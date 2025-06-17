@@ -197,3 +197,43 @@ Se algo der errado:
 
 **Versão atual**: 25.2.6  
 **Última atualização**: $(date) 
+
+# 🚀 Guia de Release Rápido - Baileys
+
+Este guia rápido explica como gerar um novo release utilizando o comando `npx release-it`.
+
+## 💡 Comando Principal
+
+Para gerar uma nova versão (ex: `patch`, `minor`, `major`), utilize o seguinte comando no terminal:
+
+```bash
+npx release-it --increment patch
+```
+
+- **`--increment patch`**: Incrementa a versão seguindo a convenção semântica (e.g., `1.0.0` para `1.0.1`). Você pode substituir `patch` por `minor`, `major` ou uma versão específica (ex: `1.2.3`).
+
+## 🔄 O que este comando faz:
+
+1.  **Incrementa a versão**: Atualiza a versão no `package.json`.
+2.  **Cria um commit**: Gera um commit com a mensagem padrão `chore(release): v<nova_versão>`.
+3.  **Cria uma tag**: Cria uma tag Git no formato `v<nova_versão>` (ex: `v25.2.7`).
+4.  **Atualiza o Changelog**: O `CHANGELOG.md` será atualizado automaticamente (configurado no `.release-it.yml`).
+5.  **Faz push**: Envia o commit e a tag para o repositório remoto.
+
+## 🚀 Automação do GitHub Actions
+
+Após o push da tag, o workflow do GitHub Actions chamado **"Publish Release"** (definido em `.github/workflows/publish-release.yml`) será automaticamente acionado. Este workflow é responsável por:
+
+-   Publicar o pacote no NPM.
+-   Criar uma nova release no GitHub com o changelog gerado.
+
+## ✅ Verificação
+
+Para verificar se o release foi bem-sucedido:
+
+1.  **No GitHub**: Verifique se uma nova tag e release foram criadas.
+2.  **No NPM**: Execute `npm view @allchats/baileys version` para confirmar a nova versão.
+
+---
+
+**Observação**: Este é o método recomendado para gerar releases, pois ele automatiza todas as etapas necessárias para que a publicação no NPM e no GitHub ocorra corretamente. 
