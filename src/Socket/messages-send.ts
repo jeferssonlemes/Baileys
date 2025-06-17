@@ -326,7 +326,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 
 				const bytes = encodeWAMessage(patchedMessage)
-				const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: new Uint8Array(bytes) })
+				const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
 				if (type === 'pkmsg') {
 					shouldIncludeDeviceIdentity = true
 				}
@@ -464,7 +464,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				const { ciphertext, senderKeyDistributionMessage } = await signalRepository.encryptGroupMessage({
 					group: destinationJid,
-					data: new Uint8Array(bytes),
+					data: bytes,
 					meId
 				})
 
