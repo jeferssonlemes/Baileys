@@ -1,3 +1,12 @@
+## [25.2.9](https://github.com/jeferssonlemes/baileys/compare/v25.2.8...v25.2.9) (2025-06-17)
+
+
+### Bug Fixes
+
+* remove unnecessary Uint8Array conversion in message encryption ([9e3e9f1](https://github.com/jeferssonlemes/baileys/commit/9e3e9f11c0bd5736f7a165c06400fab0c3a9a1ff))
+
+
+
 ## [25.2.8](https://github.com/jeferssonlemes/baileys/compare/v25.2.7...v25.2.8) (2025-06-17)
 
 
