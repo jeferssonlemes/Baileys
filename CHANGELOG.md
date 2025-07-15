@@ -1,3 +1,22 @@
+# [25.3.0](https://github.com/jeferssonlemes/baileys/compare/v25.2.9...v25.3.0) (2025-07-15)
+
+
+### Bug Fixes
+
+* add lid sutff to message.key type ([#1586](https://github.com/jeferssonlemes/baileys/issues/1586)) ([9b5afc8](https://github.com/jeferssonlemes/baileys/commit/9b5afc8c6b4c7ec7ebe240285f728144c4490d1c))
+* Connection error when add @ at start of your name ([#1536](https://github.com/jeferssonlemes/baileys/issues/1536)) ([8b6ea34](https://github.com/jeferssonlemes/baileys/commit/8b6ea34b0721250807760f35d95d619b27a81006))
+* correct spelling errors in README.md ([#1541](https://github.com/jeferssonlemes/baileys/issues/1541)) ([89b51e4](https://github.com/jeferssonlemes/baileys/commit/89b51e404088a770ff7affb745b902234985531e))
+* do not throw error on socket closed while opening ([#1576](https://github.com/jeferssonlemes/baileys/issues/1576)) ([4ccec1f](https://github.com/jeferssonlemes/baileys/commit/4ccec1f6cec44a870b8dcfee1786b6670a123bee))
+* Handle data: URIs in getStream to prevent server crash ([#1524](https://github.com/jeferssonlemes/baileys/issues/1524)) ([92b4c68](https://github.com/jeferssonlemes/baileys/commit/92b4c68de0d1e640108d7d840e080c069e975bf6))
+* handle potential null values when creating Buffers from signing keys ([#1558](https://github.com/jeferssonlemes/baileys/issues/1558)) ([210338c](https://github.com/jeferssonlemes/baileys/commit/210338c74732ffafd31c67727e88d9c5b7dc80c0))
+* handle string format for signing keys in SenderKeyState ([#1552](https://github.com/jeferssonlemes/baileys/issues/1552)) ([38b4ada](https://github.com/jeferssonlemes/baileys/commit/38b4ada9971ba81444f031b9cb1dccc2e3735874))
+* reading qr code with hosted connection ([#1520](https://github.com/jeferssonlemes/baileys/issues/1520)) ([e2ce275](https://github.com/jeferssonlemes/baileys/commit/e2ce275949b3acca70cc1b9e5fe35916d7fdc532))
+* remove chat attribute deletions in history.ts ([#1590](https://github.com/jeferssonlemes/baileys/issues/1590)) ([34188a3](https://github.com/jeferssonlemes/baileys/commit/34188a3a22f060cdbb38af6dc960c3d519c742ac))
+* remove static jimp import ([#1592](https://github.com/jeferssonlemes/baileys/issues/1592)) ([31cb8d7](https://github.com/jeferssonlemes/baileys/commit/31cb8d78a67031f2702156dcca3c878c636ba969))
+* validate media URL before downloading content from message ([#1560](https://github.com/jeferssonlemes/baileys/issues/1560)) ([591c98f](https://github.com/jeferssonlemes/baileys/commit/591c98f3e6b3985379e0dd0db968d896953a1ef1))
+
+
+
 ## [25.2.9](https://github.com/jeferssonlemes/baileys/compare/v25.2.8...v25.2.9) (2025-06-17)
 
 
