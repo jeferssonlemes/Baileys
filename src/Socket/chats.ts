@@ -44,6 +44,7 @@ import {
 	BinaryNode,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
+	jidDecode,
 	jidNormalizedUser,
 	reduceBinaryNodeToDictionary,
 	S_WHATSAPP_NET
@@ -256,7 +257,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	/** update the profile picture for yourself or a group */
-	const updateProfilePicture = async (jid: string, content: WAMediaUpload) => {
+	const updateProfilePicture = async (
+		jid: string,
+		content: WAMediaUpload,
+		dimensions?: { width: number; height: number }
+	) => {
 		let targetJid
 		if (!jid) {
 			throw new Boom(
@@ -268,7 +273,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			targetJid = jidNormalizedUser(jid) // in case it is someone other than us
 		}
 
-		const { img } = await generateProfilePicture(content)
+		const { img } = await generateProfilePicture(content, dimensions)
 		await query({
 			tag: 'iq',
 			attrs: {
@@ -632,15 +637,18 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			await sendNode({
 				tag: 'presence',
 				attrs: {
-					name: me.name,
+					name: me.name.replace(/@/g, ''),
 					type
 				}
 			})
 		} else {
+			const { server } = jidDecode(toJid)!
+			const isLid = server === 'lid'
+
 			await sendNode({
 				tag: 'chatstate',
 				attrs: {
-					from: me.id,
+					from: isLid ? me.lid! : me.id,
 					to: toJid!
 				},
 				content: [
@@ -845,6 +853,30 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					messages,
 					star
 				}
+			},
+			jid
+		)
+	}
+
+	/**
+	 * Add or Edit Contact
+	 */
+	const addOrEditContact = (jid: string, contact: proto.SyncActionValue.IContactAction) => {
+		return chatModify(
+			{
+				contact
+			},
+			jid
+		)
+	}
+
+	/**
+	 * Remove Contact
+	 */
+	const removeContact = (jid: string) => {
+		return chatModify(
+			{
+				contact: null
 			},
 			jid
 		)
@@ -1079,6 +1111,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		resyncAppState,
 		chatModify,
 		cleanDirtyBits,
+		addOrEditContact,
+		removeContact,
 		addLabel,
 		addChatLabel,
 		removeChatLabel,

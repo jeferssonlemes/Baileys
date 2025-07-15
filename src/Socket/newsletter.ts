@@ -1,266 +1,227 @@
-import { NewsletterFetchedUpdate, NewsletterMetadata, NewsletterReaction, NewsletterReactionMode, NewsletterViewRole, QueryIds, SocketConfig, WAMediaUpload, XWAPaths } from '../Types'
-import { decryptMessageNode, generateMessageID, generateProfilePicture } from '../Utils'
-import { BinaryNode, getAllBinaryNodeChildren, getBinaryNodeChild, getBinaryNodeChildren, S_WHATSAPP_NET } from '../WABinary'
-import { makeGroupsSocket } from './groups'
+import type { NewsletterCreateResponse, WAMediaUpload } from '../Types'
+import { NewsletterMetadata, NewsletterUpdate, QueryIds, XWAPaths } from '../Types'
+import { generateProfilePicture } from '../Utils/messages-media'
+import { getBinaryNodeChild } from '../WABinary'
+import { GroupsSocket } from './groups'
+import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
 
-export const makeNewsletterSocket = (config: SocketConfig) => {
-	const sock = makeGroupsSocket(config)
-	const { authState, signalRepository, query, generateMessageTag } = sock
+const parseNewsletterCreateResponse = (response: NewsletterCreateResponse): NewsletterMetadata => {
+	const { id, thread_metadata: thread, viewer_metadata: viewer } = response
+	return {
+		id: id,
+		owner: undefined,
+		name: thread.name.text,
+		creation_time: parseInt(thread.creation_time, 10),
+		description: thread.description.text,
+		invite: thread.invite,
+		subscribers: parseInt(thread.subscribers_count, 10),
+		verification: thread.verification,
+		picture: {
+			id: thread.picture.id,
+			directPath: thread.picture.direct_path
+		},
+		mute_state: viewer.mute
+	}
+}
 
-	const encoder = new TextEncoder()
+const parseNewsletterMetadata = (result: unknown): NewsletterMetadata | null => {
+	if (typeof result !== 'object' || result === null) {
+		return null
+	}
 
-	const newsletterQuery = async(jid: string, type: 'get' | 'set', content: BinaryNode[]) => (
-		query({
-			tag: 'iq',
-			attrs: {
-				id: generateMessageTag(),
-				type,
-				xmlns: 'newsletter',
-				to: jid,
-			},
-			content
-		})
-	)
+	if ('id' in result && typeof result.id === 'string') {
+		return result as NewsletterMetadata
+	}
 
-	const newsletterWMexQuery = async(jid: string | undefined, queryId: QueryIds, content?: object) => (
-		query({
-			tag: 'iq',
-			attrs: {
-				id: generateMessageTag(),
-				type: 'get',
-				xmlns: 'w:mex',
-				to: S_WHATSAPP_NET,
-			},
-			content: [
-				{
-					tag: 'query',
-					attrs: { 'query_id': queryId },
-					content: encoder.encode(
-						JSON.stringify({
-							variables: {
-								'newsletter_id': jid,
-								...content
-							}
-						})
-					)
-				}
-			]
-		})
-	)
+	if ('result' in result && typeof result.result === 'object' && result.result !== null && 'id' in result.result) {
+		return result.result as NewsletterMetadata
+	}
 
-	const parseFetchedUpdates = async(node: BinaryNode, type: 'messages' | 'updates') => {
-		let child
+	return null
+}
 
-		if(type === 'messages') {
-			child = getBinaryNodeChild(node, 'messages')
-		} else {
-			const parent = getBinaryNodeChild(node, 'message_updates')
-			child = getBinaryNodeChild(parent, 'messages')
+export const makeNewsletterSocket = (sock: GroupsSocket) => {
+	const { query, generateMessageTag } = sock
+
+	const executeWMexQuery = <T>(variables: Record<string, unknown>, queryId: string, dataPath: string): Promise<T> => {
+		return genericExecuteWMexQuery<T>(variables, queryId, dataPath, query, generateMessageTag)
+	}
+
+	const newsletterUpdate = async (jid: string, updates: NewsletterUpdate) => {
+		const variables = {
+			newsletter_id: jid,
+			updates: {
+				...updates,
+				settings: null
+			}
 		}
-
-		return await Promise.all(getAllBinaryNodeChildren(child).map(async messageNode => {
-			messageNode.attrs.from = child?.attrs.jid as string
-
-			const views = parseInt(getBinaryNodeChild(messageNode, 'views_count')?.attrs?.count || '0')
-			const reactionNode = getBinaryNodeChild(messageNode, 'reactions')
-			const reactions = getBinaryNodeChildren(reactionNode, 'reaction')
-				.map(({ attrs }) => ({ count: +attrs.count, code: attrs.code } as NewsletterReaction))
-
-			const data: NewsletterFetchedUpdate = {
-				'server_id': messageNode.attrs.server_id,
-				views,
-				reactions
-			}
-
-			if(type === 'messages') {
-				const { fullMessage: message, decrypt } = await decryptMessageNode(
-					messageNode,
-                    authState.creds.me!.id,
-                    authState.creds.me!.lid || '',
-                    signalRepository,
-                    config.logger
-				)
-
-				await decrypt()
-
-				data.message = message
-			}
-
-			return data
-		}))
+		return executeWMexQuery(variables, QueryIds.UPDATE_METADATA, 'xwa2_newsletter_update')
 	}
 
 	return {
 		...sock,
-		subscribeNewsletterUpdates: async(jid: string) => {
-			const result = await newsletterQuery(jid, 'set', [{ tag: 'live_updates', attrs: {}, content: [] }])
-
-			return getBinaryNodeChild(result, 'live_updates')?.attrs as {duration: string}
+		newsletterCreate: async (name: string, description?: string): Promise<NewsletterMetadata> => {
+			const variables = {
+				input: {
+					name,
+					description: description ?? null
+				}
+			}
+			const rawResponse = await executeWMexQuery<NewsletterCreateResponse>(
+				variables,
+				QueryIds.CREATE,
+				XWAPaths.xwa2_newsletter_create
+			)
+			return parseNewsletterCreateResponse(rawResponse)
 		},
 
-		newsletterReactionMode: async(jid: string, mode: NewsletterReactionMode) => {
-			await newsletterWMexQuery(jid, QueryIds.JOB_MUTATION, {
-				updates: { settings: { 'reaction_codes': { value: mode } } }
-			})
+		newsletterUpdate,
+
+		newsletterSubscribers: async (jid: string) => {
+			return executeWMexQuery<{ subscribers: number }>(
+				{ newsletter_id: jid },
+				QueryIds.SUBSCRIBERS,
+				XWAPaths.xwa2_newsletter_subscribers
+			)
 		},
 
-		newsletterUpdateDescription: async(jid: string, description?: string) => {
-			await newsletterWMexQuery(jid, QueryIds.JOB_MUTATION, {
-				updates: { description: description || '', settings: null }
-			})
+		newsletterMetadata: async (type: 'invite' | 'jid', key: string) => {
+			const variables = {
+				fetch_creation_time: true,
+				fetch_full_image: true,
+				fetch_viewer_metadata: true,
+				input: {
+					key,
+					type: type.toUpperCase()
+				}
+			}
+			const result = await executeWMexQuery<unknown>(variables, QueryIds.METADATA, XWAPaths.xwa2_newsletter_metadata)
+			return parseNewsletterMetadata(result)
 		},
 
-		newsletterUpdateName: async(jid: string, name: string) => {
-			await newsletterWMexQuery(jid, QueryIds.JOB_MUTATION, {
-				updates: { name, settings: null }
-			})
+		newsletterFollow: (jid: string) => {
+			return executeWMexQuery({ newsletter_id: jid }, QueryIds.FOLLOW, XWAPaths.xwa2_newsletter_follow)
 		},
 
-		newsletterUpdatePicture: async(jid: string, content: WAMediaUpload) => {
+		newsletterUnfollow: (jid: string) => {
+			return executeWMexQuery({ newsletter_id: jid }, QueryIds.UNFOLLOW, XWAPaths.xwa2_newsletter_unfollow)
+		},
+
+		newsletterMute: (jid: string) => {
+			return executeWMexQuery({ newsletter_id: jid }, QueryIds.MUTE, XWAPaths.xwa2_newsletter_mute_v2)
+		},
+
+		newsletterUnmute: (jid: string) => {
+			return executeWMexQuery({ newsletter_id: jid }, QueryIds.UNMUTE, XWAPaths.xwa2_newsletter_unmute_v2)
+		},
+
+		newsletterUpdateName: async (jid: string, name: string) => {
+			return await newsletterUpdate(jid, { name })
+		},
+
+		newsletterUpdateDescription: async (jid: string, description: string) => {
+			return await newsletterUpdate(jid, { description })
+		},
+
+		newsletterUpdatePicture: async (jid: string, content: WAMediaUpload) => {
 			const { img } = await generateProfilePicture(content)
-
-			await newsletterWMexQuery(jid, QueryIds.JOB_MUTATION, {
-				updates: { picture: img.toString('base64'), settings: null }
-			})
+			return await newsletterUpdate(jid, { picture: img.toString('base64') })
 		},
 
-		newsletterRemovePicture: async(jid: string) => {
-			await newsletterWMexQuery(jid, QueryIds.JOB_MUTATION, {
-				updates: { picture: '', settings: null }
-			})
+		newsletterRemovePicture: async (jid: string) => {
+			return await newsletterUpdate(jid, { picture: '' })
 		},
 
-		newsletterAction: async(jid: string, type: 'follow' | 'unfollow' | 'mute' | 'unmute') => {
-			await newsletterWMexQuery(jid, type.toUpperCase() as QueryIds)
-		},
-
-		newsletterCreate: async(name: string, description: string) => {
-			//TODO: Implement TOS system wide for Meta AI, communities, and here etc.
-			/**tos query */
+		newsletterReactMessage: async (jid: string, serverId: string, reaction?: string) => {
 			await query({
-				tag: 'iq',
+				tag: 'message',
 				attrs: {
-					to: S_WHATSAPP_NET,
-					xmlns: 'tos',
-					id: generateMessageTag(),
-					type: 'set'
+					to: jid,
+					...(reaction ? {} : { edit: '7' }),
+					type: 'reaction',
+					server_id: serverId,
+					id: generateMessageTag()
 				},
 				content: [
 					{
-						tag: 'notice',
-						attrs: {
-							id: '20601218',
-							stage: '5'
-						},
-						content: []
+						tag: 'reaction',
+						attrs: reaction ? { code: reaction } : {}
 					}
 				]
 			})
-			const result = await newsletterWMexQuery(undefined, QueryIds.CREATE, {
-				input: { name, description }
-			})
-
-			return extractNewsletterMetadata(result, true)
 		},
 
-		newsletterMetadata: async(type: 'invite' | 'jid', key: string, role?: NewsletterViewRole) => {
-			const result = await newsletterWMexQuery(undefined, QueryIds.METADATA, {
-				input: {
-					key,
-					type: type.toUpperCase(),
-					'view_role': role || 'GUEST'
+		newsletterFetchMessages: async (jid: string, count: number, since: number, after: number) => {
+			const messageUpdateAttrs: { count: string; since?: string; after?: string } = {
+				count: count.toString()
+			}
+			if (typeof since === 'number') {
+				messageUpdateAttrs.since = since.toString()
+			}
+
+			if (after) {
+				messageUpdateAttrs.after = after.toString()
+			}
+
+			const result = await query({
+				tag: 'iq',
+				attrs: {
+					id: generateMessageTag(),
+					type: 'get',
+					xmlns: 'newsletter',
+					to: jid
 				},
-				'fetch_viewer_metadata': true,
-				'fetch_full_image': true,
-				'fetch_creation_time': true
+				content: [
+					{
+						tag: 'message_updates',
+						attrs: messageUpdateAttrs
+					}
+				]
 			})
-
-			return extractNewsletterMetadata(result)
+			return result
 		},
 
-		newsletterAdminCount: async(jid: string) => {
-			const result = await newsletterWMexQuery(jid, QueryIds.ADMIN_COUNT)
-
-			const buff = getBinaryNodeChild(result, 'result')?.content?.toString()
-
-			return JSON.parse(buff!).data[XWAPaths.ADMIN_COUNT].admin_count as number
-		},
-
-		/**user is Lid, not Jid */
-		newsletterChangeOwner: async(jid: string, user: string) => {
-			await newsletterWMexQuery(jid, QueryIds.CHANGE_OWNER, {
-				'user_id': user
+		subscribeNewsletterUpdates: async (jid: string): Promise<{ duration: string } | null> => {
+			const result = await query({
+				tag: 'iq',
+				attrs: {
+					id: generateMessageTag(),
+					type: 'set',
+					xmlns: 'newsletter',
+					to: jid
+				},
+				content: [{ tag: 'live_updates', attrs: {}, content: [] }]
 			})
+			const liveUpdatesNode = getBinaryNodeChild(result, 'live_updates')
+			const duration = liveUpdatesNode?.attrs?.duration
+			return duration ? { duration: duration } : null
 		},
 
-		/**user is Lid, not Jid */
-		newsletterDemote: async(jid: string, user: string) => {
-			await newsletterWMexQuery(jid, QueryIds.DEMOTE, {
-				'user_id': user
-			})
+		newsletterAdminCount: async (jid: string): Promise<number> => {
+			const response = await executeWMexQuery<{ admin_count: number }>(
+				{ newsletter_id: jid },
+				QueryIds.ADMIN_COUNT,
+				XWAPaths.xwa2_newsletter_admin_count
+			)
+			return response.admin_count
 		},
 
-		newsletterDelete: async(jid: string) => {
-			await newsletterWMexQuery(jid, QueryIds.DELETE)
+		newsletterChangeOwner: async (jid: string, newOwnerJid: string) => {
+			await executeWMexQuery(
+				{ newsletter_id: jid, user_id: newOwnerJid },
+				QueryIds.CHANGE_OWNER,
+				XWAPaths.xwa2_newsletter_change_owner
+			)
 		},
 
-		/**if code wasn't passed, the reaction will be removed (if is reacted) */
-		newsletterReactMessage: async(jid: string, serverId: string, code?: string) => {
-			await query({
-				tag: 'message',
-				attrs: { to: jid, ...(!code ? { edit: '7' } : {}), type: 'reaction', 'server_id': serverId, id: generateMessageID() },
-				content: [{
-					tag: 'reaction',
-					attrs: code ? { code } : {}
-				}]
-			})
+		newsletterDemote: async (jid: string, userJid: string) => {
+			await executeWMexQuery({ newsletter_id: jid, user_id: userJid }, QueryIds.DEMOTE, XWAPaths.xwa2_newsletter_demote)
 		},
 
-		newsletterFetchMessages: async(type: 'invite' | 'jid', key: string, count: number, after?: number) => {
-			const result = await newsletterQuery(S_WHATSAPP_NET, 'get', [
-				{
-					tag: 'messages',
-					attrs: { type, ...(type === 'invite' ? { key } : { jid: key }), count: count.toString(), after: after?.toString() || '100' }
-				}
-			])
-
-			return await parseFetchedUpdates(result, 'messages')
-		},
-
-		newsletterFetchUpdates: async(jid: string, count: number, after?: number, since?: number) => {
-			const result = await newsletterQuery(jid, 'get', [
-				{
-					tag: 'message_updates',
-					attrs: { count: count.toString(), after: after?.toString() || '100', since: since?.toString() || '0' }
-				}
-			])
-
-			return await parseFetchedUpdates(result, 'updates')
+		newsletterDelete: async (jid: string) => {
+			await executeWMexQuery({ newsletter_id: jid }, QueryIds.DELETE, XWAPaths.xwa2_newsletter_delete_v2)
 		}
 	}
 }
 
-export const extractNewsletterMetadata = (node: BinaryNode, isCreate?: boolean) => {
-	const result = getBinaryNodeChild(node, 'result')?.content?.toString()
-	const metadataPath = JSON.parse(result!).data[isCreate ? XWAPaths.CREATE : XWAPaths.NEWSLETTER]
-
-	const metadata: NewsletterMetadata = {
-		id: metadataPath.id,
-		state: metadataPath.state.type,
-		'creation_time': +metadataPath.thread_metadata.creation_time,
-		name: metadataPath.thread_metadata.name.text,
-		nameTime: +metadataPath.thread_metadata.name.update_time,
-		description: metadataPath.thread_metadata.description.text,
-		descriptionTime: +metadataPath.thread_metadata.description.update_time,
-		invite: metadataPath.thread_metadata.invite,
-		handle: metadataPath.thread_metadata.handle,
-		picture: metadataPath.thread_metadata.picture.direct_path || null,
-		preview: metadataPath.thread_metadata.preview.direct_path || null,
-		'reaction_codes': metadataPath.thread_metadata?.settings?.reaction_codes?.value,
-		subscribers: +metadataPath.thread_metadata.subscribers_count,
-		verification: metadataPath.thread_metadata.verification,
-		'viewer_metadata': metadataPath.viewer_metadata
-	}
-
-	return metadata
-}
+export type NewsletterSocket = ReturnType<typeof makeNewsletterSocket>

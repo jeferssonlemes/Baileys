@@ -9,7 +9,6 @@ import {
 	AnyMediaMessageContent,
 	AnyMessageContent,
 	DownloadableMessage,
-	MediaGenerationOptions,
 	MediaType,
 	MessageContentGenerationOptions,
 	MessageGenerationOptions,
@@ -33,6 +32,7 @@ import {
 	generateThumbnail,
 	getAudioDuration,
 	getAudioWaveform,
+	getRawMediaUploadData,
 	MediaDownloadOptions
 } from './messages-media'
 
@@ -110,7 +110,10 @@ const assertColor = async color => {
 	}
 }
 
-export const prepareWAMessageMedia = async (message: AnyMediaMessageContent, options: MediaGenerationOptions) => {
+export const prepareWAMessageMedia = async (
+	message: AnyMediaMessageContent,
+	options: MessageContentGenerationOptions
+) => {
 	const logger = options.logger
 
 	let mediaType: (typeof MEDIA_KEYS)[number] | undefined
@@ -129,13 +132,12 @@ export const prepareWAMessageMedia = async (message: AnyMediaMessageContent, opt
 		media: message[mediaType]
 	}
 	delete uploadData[mediaType]
-	// check if cacheable + generate cache key
+
 	const cacheableKey =
 		typeof uploadData.media === 'object' &&
 		'url' in uploadData.media &&
 		!!uploadData.media.url &&
 		!!options.mediaCache &&
-		// generate the key
 		mediaType + ':' + uploadData.media.url.toString()
 
 	if (mediaType === 'document' && !uploadData.fileName) {
@@ -146,7 +148,6 @@ export const prepareWAMessageMedia = async (message: AnyMediaMessageContent, opt
 		uploadData.mimetype = MIMETYPE_MAP[mediaType]
 	}
 
-	// check for cache hit
 	if (cacheableKey) {
 		const mediaBuff = options.mediaCache!.get<Buffer>(cacheableKey)
 		if (mediaBuff) {
@@ -159,6 +160,48 @@ export const prepareWAMessageMedia = async (message: AnyMediaMessageContent, opt
 
 			return obj
 		}
+	}
+
+	const isNewsletter = !!options.jid && isJidNewsletter(options.jid)
+	if (isNewsletter) {
+		logger?.info({ key: cacheableKey }, 'Preparing raw media for newsletter')
+		const { filePath, fileSha256, fileLength } = await getRawMediaUploadData(
+			uploadData.media,
+			options.mediaTypeOverride || mediaType,
+			logger
+		)
+
+		const fileSha256B64 = fileSha256.toString('base64')
+		const { mediaUrl, directPath } = await options.upload(filePath, {
+			fileEncSha256B64: fileSha256B64,
+			mediaType: mediaType,
+			timeoutMs: options.mediaUploadTimeoutMs
+		})
+
+		await fs.unlink(filePath)
+
+		const obj = WAProto.Message.fromObject({
+			[`${mediaType}Message`]: MessageTypeProto[mediaType].fromObject({
+				url: mediaUrl,
+				directPath,
+				fileSha256,
+				fileLength,
+				...uploadData,
+				media: undefined
+			})
+		})
+
+		if (uploadData.ptv) {
+			obj.ptvMessage = obj.videoMessage
+			delete obj.videoMessage
+		}
+
+		if (cacheableKey) {
+			logger?.debug({ cacheableKey }, 'set cache')
+			options.mediaCache!.set(cacheableKey, WAProto.Message.encode(obj).finish())
+		}
+
+		return obj
 	}
 
 	const requiresDurationComputation = mediaType === 'audio' && typeof uploadData.seconds === 'undefined'
@@ -176,7 +219,7 @@ export const prepareWAMessageMedia = async (message: AnyMediaMessageContent, opt
 			opts: options.options
 		}
 	)
-	// url safe Base64 encode the SHA256 hash of the body
+
 	const fileEncSha256B64 = fileEncSha256.toString('base64')
 	const [{ mediaUrl, directPath }] = await Promise.all([
 		(async () => {
@@ -477,11 +520,11 @@ export const generateWAMessageContent = async (
 			// poll v2 is for community announcement groups (single select and multiple)
 			m.pollCreationMessageV2 = pollCreationMessage
 		} else {
-			if (message.poll.selectableCount > 0) {
+			if (message.poll.selectableCount === 1) {
 				//poll v3 is for single select polls
 				m.pollCreationMessageV3 = pollCreationMessage
 			} else {
-				// poll v3 for multiple choice polls
+				// poll for multiple choice polls
 				m.pollCreationMessage = pollCreationMessage
 			}
 		}
@@ -541,7 +584,7 @@ export const generateWAMessageFromContent = (
 	const timestamp = unixTimestampSeconds(options.timestamp)
 	const { quoted, userJid } = options
 
-	if (quoted) {
+	if (quoted && !isJidNewsletter(jid)) {
 		const participant = quoted.key.fromMe
 			? userJid
 			: quoted.participant || quoted.key.participant || quoted.key.remoteJid
@@ -577,7 +620,7 @@ export const generateWAMessageFromContent = (
 		key !== 'protocolMessage' &&
 		// already not converted to disappearing message
 		key !== 'ephemeralMessage' &&
-		// newsletter not accept disappearing messages
+		// newsletters don't support ephemeral messages
 		!isJidNewsletter(jid)
 	) {
 		innerMessage[key].contextInfo = {
@@ -607,7 +650,8 @@ export const generateWAMessageFromContent = (
 export const generateWAMessage = async (jid: string, content: AnyMessageContent, options: MessageGenerationOptions) => {
 	// ensure msg ID is with every log
 	options.logger = options?.logger?.child({ msgId: options.messageId })
-	return generateWAMessageFromContent(jid, await generateWAMessageContent(content, options), options)
+	// Pass jid in the options to generateWAMessageContent
+	return generateWAMessageFromContent(jid, await generateWAMessageContent(content, { ...options, jid }), options)
 }
 
 /** Get the key to access the true type of content */
@@ -729,10 +773,8 @@ export const updateMessageWithReaction = (msg: Pick<WAMessage, 'reactions'>, rea
 	const authorID = getKeyAuthor(reaction.key)
 
 	const reactions = (msg.reactions || []).filter(r => getKeyAuthor(r.key) !== authorID)
-	if (reaction.text) {
-		reactions.push(reaction)
-	}
-
+	reaction.text = reaction.text || ''
+	reactions.push(reaction)
 	msg.reactions = reactions
 }
 
