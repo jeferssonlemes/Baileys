@@ -1,3 +1,12 @@
+## [25.3.1](https://github.com/jeferssonlemes/baileys/compare/v25.3.0...v25.3.1) (2025-07-29)
+
+
+### Bug Fixes
+
+* ensure backwards compatibility for senderMessageKeys in SenderKeyState ([11e6908](https://github.com/jeferssonlemes/baileys/commit/11e6908732f9e7fc54126389ed02ba91e1f71093))
+
+
+
 # [25.3.0](https://github.com/jeferssonlemes/baileys/compare/v25.2.9...v25.3.0) (2025-07-15)
 
 
