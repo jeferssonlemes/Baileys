@@ -1,3 +1,7 @@
+## [25.3.2](https://github.com/jeferssonlemes/baileys/compare/v25.3.1...v25.3.2) (2025-07-29)
+
+
+
 ## [25.3.1](https://github.com/jeferssonlemes/baileys/compare/v25.3.0...v25.3.1) (2025-07-29)
 
 
