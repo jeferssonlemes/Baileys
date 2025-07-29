@@ -38,11 +38,6 @@ export class SenderKeyState {
 	) {
 		if (senderKeyStateStructure) {
 			this.senderKeyStateStructure = senderKeyStateStructure
-
-			// Ensure backwards compatibility: senderMessageKeys may be missing in older serialized data
-			if (!this.senderKeyStateStructure.senderMessageKeys) {
-				this.senderKeyStateStructure.senderMessageKeys = []
-			}
 		} else {
 			if (signatureKeyPair) {
 				signatureKeyPublic = signatureKeyPair.public
