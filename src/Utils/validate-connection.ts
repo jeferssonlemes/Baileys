@@ -1,7 +1,12 @@
 import { Boom } from '@hapi/boom'
 import { createHash } from 'crypto'
 import { proto } from '../../WAProto'
-import { KEY_BUNDLE_TYPE } from '../Defaults'
+import {
+	KEY_BUNDLE_TYPE,
+	WA_ADV_ACCOUNT_SIG_PREFIX,
+	WA_ADV_DEVICE_SIG_PREFIX,
+	WA_ADV_HOSTED_ACCOUNT_SIG_PREFIX
+} from '../Defaults'
 import type { AuthenticationCreds, SignalCreds, SocketConfig } from '../Types'
 import { BinaryNode, getBinaryNodeChild, jidDecode, S_WHATSAPP_NET } from '../WABinary'
 import { Curve, hmacSign } from './crypto'
@@ -65,11 +70,6 @@ export const generateLoginNode = (userJid: string, config: SocketConfig): proto.
 	return proto.ClientPayload.fromObject(payload)
 }
 
-const getPlatformType = (platform: string): proto.DeviceProps.PlatformType => {
-	const platformType = platform.toUpperCase()
-	return proto.DeviceProps.PlatformType[platformType] || proto.DeviceProps.PlatformType.DESKTOP
-}
-
 export const generateRegistrationNode = (
 	{ registrationId, signedPreKey, signedIdentityKey }: SignalCreds,
 	config: SocketConfig
@@ -82,8 +82,17 @@ export const generateRegistrationNode = (
 
 	const companion: proto.IDeviceProps = {
 		os: config.browser[0],
-		platformType: getPlatformType(config.browser[1]),
-		requireFullSync: config.syncFullHistory
+		platformType:
+			proto.DeviceProps.PlatformType[config.browser[1].toUpperCase()] ||
+			proto.DeviceProps.PlatformType.UNKNOWN,
+		requireFullSync: config.syncFullHistory,
+		historySyncConfig: {
+			storageQuotaMb: 569150,
+			inlineInitialPayloadInE2EeMsg: true,
+			supportCallLogHistory: false,
+			supportBotUserAgentChatHistory: true,
+			supportCagReactionsAndPolls: true
+		}
 	}
 
 	const companionProto = proto.DeviceProps.encode(companion).finish()
@@ -134,7 +143,7 @@ export const configureSuccessfulPairing = (
 	const { details, hmac, accountType } = proto.ADVSignedDeviceIdentityHMAC.decode(deviceIdentityNode.content as Buffer)
 	const isHostedAccount = accountType !== undefined && accountType === proto.ADVEncryptionType.HOSTED
 
-	const hmacPrefix = isHostedAccount ? Buffer.from([6, 5]) : Buffer.alloc(0)
+	const hmacPrefix = isHostedAccount ? WA_ADV_HOSTED_ACCOUNT_SIG_PREFIX : Buffer.alloc(0)
 	const advSign = hmacSign(Buffer.concat([hmacPrefix, details!]), Buffer.from(advSecretKey, 'base64'))
 	if (Buffer.compare(hmac!, advSign) !== 0) {
 		throw new Boom('Invalid account signature')
@@ -142,19 +151,31 @@ export const configureSuccessfulPairing = (
 
 	const account = proto.ADVSignedDeviceIdentity.decode(details!)
 	const { accountSignatureKey, accountSignature, details: deviceDetails } = account
-	const accountMsg = Buffer.concat([Buffer.from([6, 0]), deviceDetails!, signedIdentityKey.public])
+
+	const deviceIdentity = proto.ADVDeviceIdentity.decode(deviceDetails!)
+
+	// verify the device signature matches
+	const accountSignaturePrefix =
+		deviceIdentity.deviceType === proto.ADVEncryptionType.HOSTED
+			? WA_ADV_HOSTED_ACCOUNT_SIG_PREFIX
+			: WA_ADV_ACCOUNT_SIG_PREFIX
+	const accountMsg = Buffer.concat([accountSignaturePrefix, deviceDetails!, signedIdentityKey.public])
 	if (!Curve.verify(accountSignatureKey!, accountMsg, accountSignature!)) {
 		throw new Boom('Failed to verify account signature')
 	}
 
-	const devicePrefix = isHostedAccount ? Buffer.from([6, 6]) : Buffer.from([6, 1])
-	const deviceMsg = Buffer.concat([devicePrefix, deviceDetails!, signedIdentityKey.public, accountSignatureKey!])
+	// sign the details with our identity key
+	const deviceMsg = Buffer.concat([
+		WA_ADV_DEVICE_SIG_PREFIX,
+		deviceDetails!,
+		signedIdentityKey.public,
+		accountSignatureKey!
+	])
 	account.deviceSignature = Curve.sign(signedIdentityKey.private, deviceMsg)
 
-	const identity = createSignalIdentity(jid, accountSignatureKey!)
+	const lid = (deviceIdentity as any).lid || jid
+	const identity = createSignalIdentity(lid, accountSignatureKey!)
 	const accountEnc = encodeSignedDeviceIdentity(account, false)
-
-	const deviceIdentity = proto.ADVDeviceIdentity.decode(account.details!)
 
 	const reply: BinaryNode = {
 		tag: 'iq',
@@ -180,7 +201,7 @@ export const configureSuccessfulPairing = (
 
 	const authUpdate: Partial<AuthenticationCreds> = {
 		account,
-		me: { id: jid, name: bizName },
+		me: { id: jid, name: bizName, lid },
 		signalIdentities: [...(signalIdentities || []), identity],
 		platform: platformNode?.attrs.name
 	}
